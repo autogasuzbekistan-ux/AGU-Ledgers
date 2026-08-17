@@ -72,13 +72,24 @@ def recalculate_chain(entries):
     undan keyingi BARCHA kunlarni avtomatik qayta hisoblashi kerak. Shu
     funksiyani tuzatilgan kundan boshlab (yoki butun ro'yxat bilan)
     qayta chaqirish shu talabni qondiradi.
+
+    Oy chegarasidan o'tganda (kun ro'yxati bir necha oyni qamrab olsa)
+    avtomatik carry_over_to_next_month qoidasini qo'llaydi - FAQAT
+    dollar o'tadi, so'm har oy 0'dan boshlanadi (3-bo'lim). Shu tufayli
+    chaqiruvchi oylarni qo'lda ajratishi shart emas - butun tarixni
+    berish kifoya.
     """
     ordered = sorted(entries, key=lambda e: e.sana)
     for i, entry in enumerate(ordered):
         if i > 0:
             prev = ordered[i - 1]
-            entry.qarz_boshida_som = prev.qolgan_qarz_som
-            entry.qarz_boshida_dollar = prev.qolgan_qarz_dollar
+            if (prev.sana.year, prev.sana.month) != (entry.sana.year, entry.sana.month):
+                carried = carry_over_to_next_month(prev)
+                entry.qarz_boshida_som = carried["qarz_boshida_som"]
+                entry.qarz_boshida_dollar = carried["qarz_boshida_dollar"]
+            else:
+                entry.qarz_boshida_som = prev.qolgan_qarz_som
+                entry.qarz_boshida_dollar = prev.qolgan_qarz_dollar
         entry.compute()
     return ordered
 
@@ -93,15 +104,19 @@ def carry_over_to_next_month(last_entry_of_month):
     }
 
 
+def received_usd_equivalent(entry):
+    """Bitta yozuvda haqiqatda qabul qilingan pulni dollar ekvivalentida
+    qaytaradi (kurs bo'lmasa - faqat naqd dollar hisobga olinadi)."""
+    total = entry.jami_qabul_dollar
+    if entry.kurs:
+        total += entry.jami_qabul_som / entry.kurs
+    return total
+
+
 def total_received_usd_equivalent(entries):
     """Bir nechta yozuv (turli kun/kontragent) bo'yicha haqiqatda qabul
     qilingan pulni dollar ekvivalentida jamlaydi (komissiya bazasi)."""
-    total = 0.0
-    for e in entries:
-        total += e.jami_qabul_dollar
-        if e.kurs:
-            total += e.jami_qabul_som / e.kurs
-    return total
+    return sum(received_usd_equivalent(e) for e in entries)
 
 
 def monthly_commission(entries, rate=0.01):

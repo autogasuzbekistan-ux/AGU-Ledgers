@@ -1,0 +1,588 @@
+"""AGU Virtual Ofis - Telegram bot (aiogram 3.x).
+
+TEXNIK_TOPSHIRIQ.md 6-bo'lim: bot muloqot oqimi. Bu modul ledger.py,
+aliases.py, diff.py, sheets.py, notifications.py, bot_logic.py, audit.py
+modullarini bog'laydi - ularning barchasi mustaqil, haqiqiy bot/tarmoqsiz
+sinalgan (tests/). bot.py'ning o'zi aiogram Bot API va Google Sheets bilan
+ishlaydi, shuning uchun haqiqiy BOT_TOKEN, service account va tarmoq
+aloqasi bo'lmasa avtomatik sinalmaydi - bu modul faqat qo'lda, real
+sozlamalar bilan sinalishi kerak.
+
+Ishga tushirish: `.env` to'ldirilgach `python3 bot.py`.
+"""
+import asyncio
+import calendar
+import logging
+from datetime import date, timedelta
+
+from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import (
+    CallbackQuery,
+    Document,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+from aliases import AliasRegistry
+from audit import AuditLog
+from bot_logic import (
+    apply_entry,
+    compute_pending_kontragents,
+    days_since_last_payment,
+    has_prior_entry,
+    is_unusually_large_amount,
+    parse_manual_date,
+    top_debtors,
+)
+from config import Config, load_config
+from diff import diff_parsed_data, format_diff, has_changes
+from ledger import DailyEntry, monthly_commission, total_received_usd_equivalent
+from notifications import (
+    format_alert_debt_threshold,
+    format_alert_no_payment,
+    format_alert_past_day_corrected,
+    format_entry_confirmation,
+    format_month_end_summary,
+    format_morning_digest,
+)
+from parsers import parse_click_file, parse_hisobot_file, parse_report_file
+from sheets import SheetsClient
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("agu_bot")
+
+FIELD_QUESTIONS = [
+    ("naqd_som", "Naqd so'm qancha?"),
+    ("click", "Click qancha?"),
+    ("naqd_dollar", "Naqd dollar (qog'oz) qancha?"),
+    ("terminal", "Terminal (plastik + o'tkazma) qancha?"),
+]
+OY_NOMLARI_UZ = [
+    "Yanvar", "Fevral", "Mart", "Aprel", "May", "Iyun",
+    "Iyul", "Avgust", "Sentabr", "Oktabr", "Noyabr", "Dekabr",
+]
+
+
+class EntryStates(StatesGroup):
+    waiting_kurs = State()
+    waiting_initial_qarz_dollar = State()
+    waiting_field = State()
+    waiting_delayed_date = State()
+    confirm_summary = State()
+    confirm_large_amount = State()
+
+
+class ReuploadStates(StatesGroup):
+    waiting_confirmation = State()
+
+
+# ---------------------------------------------------------------------
+# Ruxsat nazorati (9-bo'lim: faqat ro'yxatga olingan Telegram ID(lar))
+# ---------------------------------------------------------------------
+class AccessMiddleware(BaseMiddleware):
+    def __init__(self, cfg: Config):
+        super().__init__()
+        self.cfg = cfg
+
+    async def __call__(self, handler, event, data):
+        user = data.get("event_from_user")
+        if user is not None and not self.cfg.is_allowed(user.id):
+            logger.warning("Ruxsatsiz urinish: telegram_id=%s", user.id)
+            return
+        return await handler(event, data)
+
+
+def _parse_number(text):
+    """Foydalanuvchi kiritgan sonni o'qiydi (bo'sh joy/vergul ajratgichlar
+    bilan ham). Noto'g'ri bo'lsa None qaytaradi."""
+    cleaned = text.strip().replace(" ", "").replace(",", ".")
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def _cancel_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Bugun to'lov yo'q", callback_data="skip_today")],
+    ])
+
+
+def _summary_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="Tasdiqlash", callback_data="confirm_entry"),
+            InlineKeyboardButton(text="Tuzatish", callback_data="edit_entry"),
+        ],
+    ])
+
+
+def _large_amount_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="Ha, to'g'ri", callback_data="confirm_large"),
+            InlineKeyboardButton(text="Bekor qilish", callback_data="cancel_large"),
+        ],
+    ])
+
+
+def _reupload_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="Tasdiqlash", callback_data="reupload_confirm"),
+            InlineKeyboardButton(text="Bekor qilish", callback_data="reupload_cancel"),
+        ],
+    ])
+
+
+def build_router():
+    router = Router()
+
+    # -------------------------------------------------------------
+    # Umumiy buyruqlar
+    # -------------------------------------------------------------
+    @router.message(Command("start"))
+    async def cmd_start(message: Message):
+        await message.answer(
+            "AGU Virtual Ofis botiga xush kelibsiz.\n"
+            "/kirim - bugungi to'lovlarni kiritish\n"
+            "/kechiktirilgan - o'tgan kunga yozuv kiritish\n"
+            "/qarzdorlar - joriy qarzdorlar ro'yxati"
+        )
+
+    # -------------------------------------------------------------
+    # Kurs so'rash (kuniga bir marta)
+    # -------------------------------------------------------------
+    async def _ensure_kurs(message_or_cb, state: FSMContext, sheets: SheetsClient, sana: date):
+        kurs = sheets.get_kurs(sana)
+        if kurs is not None:
+            return kurs
+        await state.set_state(EntryStates.waiting_kurs)
+        await state.update_data(kurs_sana=sana.isoformat())
+        target = message_or_cb.message if isinstance(message_or_cb, CallbackQuery) else message_or_cb
+        await target.answer(f"{sana.isoformat()} uchun bugungi kurs qancha?")
+        return None
+
+    async def _start_next_kontragent(message: Message, state: FSMContext, sheets, aliases_registry, sana):
+        all_ids = [kid for kid, _ in aliases_registry.kontragentlar()]
+        entries_today = sheets.read_all_entries()
+        done_today = [
+            kid for kid, entries in entries_today.items()
+            if any(e.sana == sana for e in entries)
+        ]
+        pending = compute_pending_kontragents(all_ids, done_today)
+        if not pending:
+            await state.clear()
+            await message.answer(f"{sana.isoformat()} uchun barcha kontragentlar kiritildi.")
+            return
+
+        kontragent_id = pending[0]
+        await state.update_data(
+            kontragent_id=kontragent_id, sana=sana.isoformat(), field_index=0, answers={},
+        )
+
+        history = sheets.read_entries(kontragent_id)
+        if not has_prior_entry(history, sana):
+            await state.set_state(EntryStates.waiting_initial_qarz_dollar)
+            nomi = aliases_registry.rasmiy_nom(kontragent_id)
+            await message.answer(
+                f"{nomi} - bu birinchi yozuv. Boshlang'ich qarz (dollar) qancha? "
+                f"(so'm qarzi 0 dan boshlanadi)"
+            )
+            return
+
+        await state.set_state(EntryStates.waiting_field)
+        nomi = aliases_registry.rasmiy_nom(kontragent_id)
+        field_key, question = FIELD_QUESTIONS[0]
+        await message.answer(f"{nomi}\n{question}", reply_markup=_cancel_keyboard())
+
+    @router.message(Command("kirim"))
+    async def cmd_kirim(message: Message, state: FSMContext, sheets, aliases_registry):
+        sana = date.today()
+        kurs = await _ensure_kurs(message, state, sheets, sana)
+        if kurs is None:
+            return
+        await state.update_data(sana=sana.isoformat())
+        await _start_next_kontragent(message, state, sheets, aliases_registry, sana)
+
+    @router.message(Command("kechiktirilgan"))
+    async def cmd_kechiktirilgan(message: Message, state: FSMContext):
+        await state.set_state(EntryStates.waiting_delayed_date)
+        await message.answer("Qaysi sanaga yozuv kiritmoqchisiz? (KK.OO.YYYY, masalan 15.08.2026)")
+
+    @router.message(EntryStates.waiting_delayed_date)
+    async def on_delayed_date(message: Message, state: FSMContext, sheets, aliases_registry):
+        sana = parse_manual_date(message.text)
+        if sana is None:
+            await message.answer("Sana tushunilmadi. Format: KK.OO.YYYY (masalan 15.08.2026)")
+            return
+        kurs = await _ensure_kurs(message, state, sheets, sana)
+        if kurs is None:
+            return
+        await state.update_data(sana=sana.isoformat())
+        await _start_next_kontragent(message, state, sheets, aliases_registry, sana)
+
+    @router.message(EntryStates.waiting_kurs)
+    async def on_kurs_answer(message: Message, state: FSMContext, sheets, aliases_registry):
+        kurs = _parse_number(message.text)
+        if kurs is None or kurs <= 0:
+            await message.answer("Noto'g'ri qiymat. Kursni raqam bilan yuboring.")
+            return
+        data = await state.get_data()
+        sana = date.fromisoformat(data["kurs_sana"])
+        sheets.set_kurs(sana, kurs)
+        await message.answer(f"Kurs saqlandi: {kurs}")
+        await state.update_data(sana=sana.isoformat())
+        await _start_next_kontragent(message, state, sheets, aliases_registry, sana)
+
+    @router.message(EntryStates.waiting_initial_qarz_dollar)
+    async def on_initial_qarz(message: Message, state: FSMContext):
+        qarz = _parse_number(message.text)
+        if qarz is None:
+            await message.answer("Noto'g'ri qiymat. Boshlang'ich qarzni (dollar) raqam bilan yuboring.")
+            return
+        await state.update_data(initial_qarz_dollar=qarz)
+        await state.set_state(EntryStates.waiting_field)
+        data = await state.get_data()
+        field_key, question = FIELD_QUESTIONS[data["field_index"]]
+        await message.answer(question, reply_markup=_cancel_keyboard())
+
+    # -------------------------------------------------------------
+    # 4 ta savol (naqd so'm / click / naqd dollar / terminal)
+    # -------------------------------------------------------------
+    async def _show_summary(message: Message, state: FSMContext, cfg, sheets, aliases_registry, audit):
+        data = await state.get_data()
+        sana = date.fromisoformat(data["sana"])
+        kontragent_id = data["kontragent_id"]
+        answers = data["answers"]
+        kurs = sheets.get_kurs(sana)
+
+        history = sheets.read_entries(kontragent_id)
+        qarz_boshida_som, qarz_boshida_dollar = 0, data.get("initial_qarz_dollar", 0)
+        if has_prior_entry(history, sana):
+            prior = sorted((e for e in history if e.sana < sana), key=lambda e: e.sana)[-1]
+            qarz_boshida_som, qarz_boshida_dollar = prior.qolgan_qarz_som, prior.qolgan_qarz_dollar
+
+        entry = DailyEntry(
+            sana=sana, kontragent_id=kontragent_id, kurs=kurs,
+            qarz_boshida_som=qarz_boshida_som, qarz_boshida_dollar=qarz_boshida_dollar,
+            **answers,
+        ).compute()
+        await state.update_data(pending_entry=_entry_to_dict(entry))
+
+        nomi = aliases_registry.rasmiy_nom(kontragent_id)
+        if is_unusually_large_amount(entry, cfg.large_amount_threshold_usd):
+            await state.set_state(EntryStates.confirm_large_amount)
+            await message.answer(
+                format_entry_confirmation(entry, nomi) + "\n\nBu g'ayrioddiy katta summa. Tasdiqlaysizmi?",
+                reply_markup=_large_amount_keyboard(),
+            )
+            return
+
+        await state.set_state(EntryStates.confirm_summary)
+        await message.answer(format_entry_confirmation(entry, nomi), reply_markup=_summary_keyboard())
+
+    @router.message(EntryStates.waiting_field)
+    async def on_field_answer(message: Message, state: FSMContext, cfg, sheets, aliases_registry, audit):
+        value = _parse_number(message.text)
+        if value is None:
+            await message.answer("Noto'g'ri qiymat. Iltimos raqam yuboring.")
+            return
+
+        data = await state.get_data()
+        field_index = data["field_index"]
+        field_key, _ = FIELD_QUESTIONS[field_index]
+        answers = data["answers"]
+        answers[field_key] = value
+        field_index += 1
+        await state.update_data(answers=answers, field_index=field_index)
+
+        if field_index < len(FIELD_QUESTIONS):
+            _, question = FIELD_QUESTIONS[field_index]
+            await message.answer(question)
+            return
+
+        await _show_summary(message, state, cfg, sheets, aliases_registry, audit)
+
+    @router.callback_query(F.data == "skip_today", EntryStates.waiting_field)
+    async def on_skip_today(callback: CallbackQuery, state: FSMContext, cfg, sheets, aliases_registry, audit):
+        await state.update_data(answers={key: 0 for key, _ in FIELD_QUESTIONS}, field_index=len(FIELD_QUESTIONS))
+        await callback.answer()
+        await _show_summary(callback.message, state, cfg, sheets, aliases_registry, audit)
+
+    async def _persist_and_continue(message: Message, state: FSMContext, cfg, sheets, aliases_registry, audit, actor_id):
+        data = await state.get_data()
+        entry = _entry_from_dict(data["pending_entry"])
+        kontragent_id = entry.kontragent_id
+        sana = entry.sana
+
+        history = sheets.read_entries(kontragent_id)
+        was_correction = any(e.sana == sana for e in history)
+        chain = apply_entry(history, entry)
+        for e in chain:
+            if e.sana >= sana:
+                sheets.update_entry(e)
+
+        audit.log_action(actor_id, "tuzatish" if was_correction else "kiritish", {
+            "kontragent_id": kontragent_id, "sana": sana.isoformat(),
+        })
+
+        nomi = aliases_registry.rasmiy_nom(kontragent_id)
+        await message.answer(format_entry_confirmation(entry, nomi))
+
+        if was_correction and sana < date.today():
+            actor_nomi = f"telegram_id={actor_id}"
+            alert = format_alert_past_day_corrected(nomi, sana, actor_nomi)
+            for admin_id in [aid for aid in cfg.allowed_telegram_ids if aid != actor_id]:
+                await message.bot.send_message(admin_id, alert)
+
+        await _start_next_kontragent(message, state, sheets, aliases_registry, sana)
+
+    @router.callback_query(F.data == "confirm_entry", EntryStates.confirm_summary)
+    async def on_confirm_entry(callback: CallbackQuery, state: FSMContext, cfg, sheets, aliases_registry, audit):
+        await callback.answer()
+        await _persist_and_continue(callback.message, state, cfg, sheets, aliases_registry, audit, callback.from_user.id)
+
+    @router.callback_query(F.data == "confirm_large", EntryStates.confirm_large_amount)
+    async def on_confirm_large(callback: CallbackQuery, state: FSMContext, cfg, sheets, aliases_registry, audit):
+        await callback.answer()
+        await _persist_and_continue(callback.message, state, cfg, sheets, aliases_registry, audit, callback.from_user.id)
+
+    @router.callback_query(F.data == "cancel_large", EntryStates.confirm_large_amount)
+    async def on_cancel_large(callback: CallbackQuery, state: FSMContext):
+        await callback.answer()
+        await state.set_state(EntryStates.waiting_field)
+        await state.update_data(answers={}, field_index=0)
+        await callback.message.answer(FIELD_QUESTIONS[0][1], reply_markup=_cancel_keyboard())
+
+    @router.callback_query(F.data == "edit_entry", EntryStates.confirm_summary)
+    async def on_edit_entry(callback: CallbackQuery, state: FSMContext):
+        await callback.answer()
+        await state.set_state(EntryStates.waiting_field)
+        await state.update_data(answers={}, field_index=0)
+        await callback.message.answer(FIELD_QUESTIONS[0][1], reply_markup=_cancel_keyboard())
+
+    # -------------------------------------------------------------
+    # Qarzdorlar ro'yxati (qo'lda chaqirish)
+    # -------------------------------------------------------------
+    @router.message(Command("qarzdorlar"))
+    async def cmd_qarzdorlar(message: Message, sheets, aliases_registry):
+        entries_by_kontragent = sheets.read_all_entries()
+        debtors = top_debtors(entries_by_kontragent, aliases_registry)
+        await message.answer(format_morning_digest(debtors))
+
+    # -------------------------------------------------------------
+    # Fayl yuklash (Click / hisobot / "Абдуллох" formatidagi fayllar)
+    # -------------------------------------------------------------
+    def _detect_file_kind(filename):
+        lowered = filename.lower()
+        if lowered.startswith("click"):
+            return "click"
+        if lowered.startswith("hisobot"):
+            return "hisobot"
+        return "report"
+
+    @router.message(F.document)
+    async def on_document(message: Message, state: FSMContext, bot: Bot, cfg, sheets, aliases_registry, audit):
+        document: Document = message.document
+        kind = _detect_file_kind(document.file_name or "")
+        tmp_path = f"/tmp/{document.file_id}_{document.file_name}"
+        file = await bot.get_file(document.file_id)
+        await bot.download_file(file.file_path, destination=tmp_path)
+
+        try:
+            if kind == "click":
+                raw, kurs = parse_click_file(tmp_path)
+                if kurs:
+                    sheets.set_kurs(date.today(), kurs)
+            elif kind == "hisobot":
+                raw = parse_hisobot_file(tmp_path)
+            else:
+                raw = parse_report_file(tmp_path)
+        except ValueError as exc:
+            await message.answer(f"Faylni o'qib bo'lmadi: {exc}")
+            return
+
+        resolved, tekshirish_kerak = aliases_registry.resolve_many(raw.keys())
+        by_id = {aliases_registry.resolve(name): raw[name] for name in resolved}
+
+        cache_key = f"last_upload:{kind}"
+        data = await state.get_data()
+        previous = data.get(cache_key, {})
+
+        diff = diff_parsed_data(previous, by_id)
+        if not has_changes(diff):
+            await message.answer("Fayl qayta tahlil qilindi - o'zgarish topilmadi.")
+        else:
+            await state.set_state(ReuploadStates.waiting_confirmation)
+            await state.update_data(pending_upload={"kind": kind, "kontragent_ids": by_id, "cache_key": cache_key})
+            names_by_id = {kid: aliases_registry.rasmiy_nom(kid) for kid in by_id}
+            readable_diff = {
+                "ozgargan": {names_by_id.get(k, k): v for k, v in diff["ozgargan"].items()},
+                "yangi": {names_by_id.get(k, k): v for k, v in diff["yangi"].items()},
+                "yoqolgan": {names_by_id.get(k, k): v for k, v in diff["yoqolgan"].items()},
+            }
+            lines = format_diff(readable_diff, title="O'zgarishlar aniqlandi:")
+            await message.answer("\n".join(lines), reply_markup=_reupload_keyboard())
+
+        if tekshirish_kerak:
+            await message.answer(
+                "Qo'lda tekshiring - mos kelmagan nomlar:\n" + "\n".join(tekshirish_kerak)
+            )
+
+    @router.callback_query(F.data == "reupload_confirm", ReuploadStates.waiting_confirmation)
+    async def on_reupload_confirm(callback: CallbackQuery, state: FSMContext, sheets, aliases_registry, audit):
+        data = await state.get_data()
+        pending = data["pending_upload"]
+        sana = date.today()
+
+        for kontragent_id, value in pending["kontragent_ids"].items():
+            history = sheets.read_entries(kontragent_id)
+            existing = next((e for e in history if e.sana == sana), None)
+            kwargs = dict(existing.__dict__) if existing else {}
+            if pending["kind"] == "click":
+                kwargs["click"] = value
+            elif pending["kind"] in ("hisobot", "report"):
+                kwargs.update(value)
+            entry = DailyEntry(
+                sana=sana, kontragent_id=kontragent_id,
+                naqd_som=kwargs.get("naqd_som", 0), click=kwargs.get("click", 0),
+                naqd_dollar=kwargs.get("naqd_dollar", 0), terminal=kwargs.get("terminal", 0),
+                chegirma_som=kwargs.get("chegirma_som", 0), kurs=sheets.get_kurs(sana),
+                qarz_boshida_som=existing.qarz_boshida_som if existing else 0,
+                qarz_boshida_dollar=existing.qarz_boshida_dollar if existing else 0,
+            )
+            chain = apply_entry(history, entry)
+            for e in chain:
+                if e.sana >= sana:
+                    sheets.update_entry(e)
+
+        await state.update_data(**{pending["cache_key"]: pending["kontragent_ids"]})
+        await state.set_state(None)
+        audit.log_action(callback.from_user.id, "fayl_tasdiqlash", {"kind": pending["kind"]})
+        await callback.answer()
+        await callback.message.answer("Saqlandi.")
+
+    @router.callback_query(F.data == "reupload_cancel", ReuploadStates.waiting_confirmation)
+    async def on_reupload_cancel(callback: CallbackQuery, state: FSMContext):
+        await state.set_state(None)
+        await callback.answer()
+        await callback.message.answer("Bekor qilindi - hech narsa yozilmadi.")
+
+    return router
+
+
+def _entry_to_dict(entry):
+    return {
+        "sana": entry.sana.isoformat(), "kontragent_id": entry.kontragent_id,
+        "naqd_som": entry.naqd_som, "click": entry.click, "naqd_dollar": entry.naqd_dollar,
+        "terminal": entry.terminal, "chegirma_som": entry.chegirma_som, "kurs": entry.kurs,
+        "qarz_boshida_som": entry.qarz_boshida_som, "qarz_boshida_dollar": entry.qarz_boshida_dollar,
+    }
+
+
+def _entry_from_dict(d):
+    return DailyEntry(
+        sana=date.fromisoformat(d["sana"]), kontragent_id=d["kontragent_id"],
+        naqd_som=d["naqd_som"], click=d["click"], naqd_dollar=d["naqd_dollar"],
+        terminal=d["terminal"], chegirma_som=d["chegirma_som"], kurs=d["kurs"],
+        qarz_boshida_som=d["qarz_boshida_som"], qarz_boshida_dollar=d["qarz_boshida_dollar"],
+    ).compute()
+
+
+# ---------------------------------------------------------------------
+# Rejalashtirilgan bildirishnomalar (8-bo'lim)
+# ---------------------------------------------------------------------
+async def send_morning_digest(bot: Bot, cfg: Config, sheets: SheetsClient, aliases_registry: AliasRegistry):
+    entries_by_kontragent = sheets.read_all_entries()
+    debtors = top_debtors(entries_by_kontragent, aliases_registry)
+    text = format_morning_digest(debtors)
+    today = date.today()
+
+    alerts = []
+    for kontragent_id, entries in entries_by_kontragent.items():
+        nomi = aliases_registry.rasmiy_nom(kontragent_id)
+        gone_days = days_since_last_payment(entries, today)
+        if gone_days is not None and gone_days >= cfg.no_payment_alert_days:
+            alerts.append(format_alert_no_payment(nomi, gone_days))
+        if entries:
+            latest = sorted(entries, key=lambda e: e.sana)[-1]
+            if latest.qolgan_qarz_dollar > cfg.debt_alert_threshold_usd:
+                alerts.append(format_alert_debt_threshold(nomi, latest.qolgan_qarz_dollar, cfg.debt_alert_threshold_usd))
+
+    for admin_id in cfg.allowed_telegram_ids:
+        await bot.send_message(admin_id, text)
+        for alert in alerts:
+            await bot.send_message(admin_id, alert)
+
+
+async def send_month_end_summary(bot: Bot, cfg: Config, sheets: SheetsClient):
+    today = date.today()
+    last_day_prev_month = today.replace(day=1) - timedelta(days=1)
+    entries_by_kontragent = sheets.read_all_entries()
+    month_entries = [
+        e for entries in entries_by_kontragent.values() for e in entries
+        if e.sana.year == last_day_prev_month.year and e.sana.month == last_day_prev_month.month
+    ]
+    if not month_entries:
+        return
+
+    jami_usd = total_received_usd_equivalent(month_entries)
+    komissiya = monthly_commission(month_entries, rate=cfg.commission_rate)
+    jami_chegirma = sum(e.chegirma_som for e in month_entries)
+    oy_nomi = OY_NOMLARI_UZ[last_day_prev_month.month - 1]
+    text = format_month_end_summary(oy_nomi, jami_usd, komissiya, jami_chegirma)
+
+    for admin_id in cfg.allowed_telegram_ids:
+        await bot.send_message(admin_id, text)
+
+
+def _is_last_day_of_month(d):
+    return d.day == calendar.monthrange(d.year, d.month)[1]
+
+
+async def main():
+    cfg = load_config()
+    bot = Bot(token=cfg.bot_token)
+    dp = Dispatcher(storage=MemoryStorage())
+
+    sheets = SheetsClient.from_service_account(cfg.google_sheets_id, cfg.google_service_account_json)
+    audit = AuditLog(path=cfg.audit_log_path)
+    try:
+        aliases_registry = AliasRegistry.load_json(cfg.aliases_json_path)
+    except FileNotFoundError:
+        logger.warning("Alias fayli topilmadi (%s) - bo'sh registr bilan boshlanmoqda.", cfg.aliases_json_path)
+        aliases_registry = AliasRegistry()
+
+    dp["cfg"] = cfg
+    dp["sheets"] = sheets
+    dp["aliases_registry"] = aliases_registry
+    dp["audit"] = audit
+
+    router = build_router()
+    dp.include_router(router)
+    router.message.middleware(AccessMiddleware(cfg))
+    router.callback_query.middleware(AccessMiddleware(cfg))
+
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(
+        send_morning_digest, "cron", hour=cfg.morning_digest_hour, minute=0,
+        args=[bot, cfg, sheets, aliases_registry],
+    )
+    scheduler.add_job(
+        send_month_end_summary, "cron", hour=0, minute=5,
+        args=[bot, cfg, sheets],
+    )
+    scheduler.start()
+
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

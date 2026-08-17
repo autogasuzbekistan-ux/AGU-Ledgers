@@ -34,6 +34,16 @@ class Config:
         self.google_service_account_json = env["GOOGLE_SERVICE_ACCOUNT_JSON"]
         self.allowed_telegram_ids = _parse_allowed_ids(env["ALLOWED_TELEGRAM_ID"])
 
+        # Ixtiyoriy sozlamalar - standart qiymatlar bilan, .env'da bo'lmasa
+        # ham bot ishga tushadi.
+        self.aliases_json_path = env.get("ALIASES_JSON_PATH", "aliases_data.json")
+        self.audit_log_path = env.get("AUDIT_LOG_PATH", "audit.log")
+        self.commission_rate = float(env.get("COMMISSION_RATE", "0.01"))
+        self.large_amount_threshold_usd = float(env.get("LARGE_AMOUNT_THRESHOLD_USD", "5000"))
+        self.debt_alert_threshold_usd = float(env.get("DEBT_ALERT_THRESHOLD_USD", "10000"))
+        self.no_payment_alert_days = int(env.get("NO_PAYMENT_ALERT_DAYS", "3"))
+        self.morning_digest_hour = int(env.get("MORNING_DIGEST_HOUR", "8"))
+
     def is_allowed(self, telegram_id):
         return telegram_id in self.allowed_telegram_ids
 

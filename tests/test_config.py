@@ -37,3 +37,21 @@ def test_config_raises_on_missing_required_vars():
 
     with pytest.raises(RuntimeError, match="BOT_TOKEN"):
         Config(env=env)
+
+
+def test_config_optional_settings_have_defaults():
+    cfg = Config(env=_valid_env())
+
+    assert cfg.aliases_json_path == "aliases_data.json"
+    assert cfg.commission_rate == 0.01
+    assert cfg.large_amount_threshold_usd == 5000
+    assert cfg.debt_alert_threshold_usd == 10000
+    assert cfg.no_payment_alert_days == 3
+    assert cfg.morning_digest_hour == 8
+
+
+def test_config_optional_settings_can_be_overridden():
+    cfg = Config(env=_valid_env(COMMISSION_RATE="0.015", LARGE_AMOUNT_THRESHOLD_USD="2000"))
+
+    assert cfg.commission_rate == 0.015
+    assert cfg.large_amount_threshold_usd == 2000

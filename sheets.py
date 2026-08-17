@@ -106,6 +106,22 @@ class SheetsClient:
         ]
         return sorted(entries, key=lambda e: e.sana)
 
+    def read_all_entries(self):
+        """Barcha kontragentlarning barcha yozuvlarini qaytaradi:
+        {kontragent_id: [DailyEntry, ...]} (har biri sana bo'yicha
+        tartiblangan). Kunlik holat ro'yxati va qarzdorlar reytingi
+        uchun ishlatiladi."""
+        rows = self._get_all_rows(LEDGER_SHEET)
+        by_kontragent = {}
+        for row in rows:
+            if len(row) < 2:
+                continue
+            entry = _row_to_entry(row)
+            by_kontragent.setdefault(entry.kontragent_id, []).append(entry)
+        for entries in by_kontragent.values():
+            entries.sort(key=lambda e: e.sana)
+        return by_kontragent
+
     def update_entry(self, entry):
         """Mavjud (sana, kontragent_id) yozuvini topib, o'sha qatorni
         ustidan yozadi ('tuzatish' tugmasi uchun). Topilmasa - yangi

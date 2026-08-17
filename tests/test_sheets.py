@@ -70,6 +70,20 @@ def test_update_entry_appends_when_no_existing_row_found():
     assert entries[0].naqd_dollar == 10
 
 
+def test_read_all_entries_groups_by_kontragent_and_sorts():
+    client = _client()
+    client.append_entry(_entry(date(2026, 8, 2), naqd_dollar=10, qarz_boshida_dollar=100))
+    client.append_entry(_entry(date(2026, 8, 1), naqd_dollar=5, qarz_boshida_dollar=100))
+    other = DailyEntry(sana=date(2026, 8, 1), kontragent_id="alisher", qarz_boshida_dollar=50).compute()
+    client.append_entry(other)
+
+    result = client.read_all_entries()
+
+    assert set(result.keys()) == {"rashid", "alisher"}
+    assert [e.sana for e in result["rashid"]] == [date(2026, 8, 1), date(2026, 8, 2)]
+    assert [e.sana for e in result["alisher"]] == [date(2026, 8, 1)]
+
+
 def test_get_and_set_kurs_roundtrip():
     client = _client()
 

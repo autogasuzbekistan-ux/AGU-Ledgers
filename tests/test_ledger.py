@@ -75,6 +75,28 @@ def test_recalculate_chain_reflects_historical_correction():
     assert day2.qolgan_qarz_dollar == 650
 
 
+def test_recalculate_chain_resets_som_but_not_dollar_across_month_boundary():
+    day_before = DailyEntry(
+        sana=date(2026, 8, 31), kontragent_id="rashid",
+        naqd_som=50000, naqd_dollar=20,
+        qarz_boshida_som=150000, qarz_boshida_dollar=300,
+    )
+    first_of_next_month = DailyEntry(
+        sana=date(2026, 9, 1), kontragent_id="rashid",
+        naqd_som=10000, naqd_dollar=5,
+    )
+
+    chain = recalculate_chain([day_before, first_of_next_month])
+
+    assert chain[0].qolgan_qarz_som == 100000
+    assert chain[0].qolgan_qarz_dollar == 280
+    # oy almashdi: so'm 0'dan boshlandi, dollar davom etdi
+    assert chain[1].qarz_boshida_som == 0
+    assert chain[1].qarz_boshida_dollar == 280
+    assert chain[1].qolgan_qarz_som == -10000  # avans (to'lov bor, qarz yo'q)
+    assert chain[1].qolgan_qarz_dollar == 275
+
+
 def test_carry_over_to_next_month_only_carries_dollar():
     last_day = DailyEntry(
         sana=date(2026, 8, 31), kontragent_id="rashid",

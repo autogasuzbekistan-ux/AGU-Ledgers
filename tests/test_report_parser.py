@@ -56,7 +56,7 @@ def test_parse_report_file_skips_known_sheets_and_sheets_without_section(tmp_pat
     ws1.title = "Ойлик %"
     _set_kelgan_pul_block(ws1, start_row=10, values=[("сум", 111), ("click", 0), ("доллар", 0), ("пластик", 0)])
 
-    ws2 = wb.create_sheet("2")
+    wb.create_sheet("2")
     # bu varaqda 'келган пул' bo'limi umuman yo'q
 
     ws3 = wb.create_sheet("3")
