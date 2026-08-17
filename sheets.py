@@ -17,6 +17,7 @@ tarmoq chaqiruvisiz sinash uchun `values_service` parametri orqali
 mumkin (tests/test_sheets.py'ga qarang). Ishlab chiqarishda
 `SheetsClient.from_service_account(...)` chaqiriladi.
 """
+import json
 from datetime import date as _date
 
 from google.oauth2 import service_account
@@ -35,6 +36,12 @@ LEDGER_HEADERS = [
     "jami_qabul_som", "jami_qabul_dollar", "qolgan_qarz_som", "qolgan_qarz_dollar",
 ]
 LEDGER_LAST_COLUMN = "N"  # LEDGER_HEADERS uzunligiga mos (14-ustun)
+
+
+def is_inline_json(service_account_json):
+    """GOOGLE_SERVICE_ACCOUNT_JSON qiymati fayl yo'li emas, JSON
+    matnining o'zi ekanligini aniqlaydi (Railway kabi muhitlar uchun)."""
+    return service_account_json.strip().startswith("{")
 
 
 def _entry_to_row(entry):
@@ -75,10 +82,20 @@ class SheetsClient:
         self._values = values_service
 
     @classmethod
-    def from_service_account(cls, spreadsheet_id, service_account_json_path):
-        creds = service_account.Credentials.from_service_account_file(
-            service_account_json_path, scopes=SCOPES
-        )
+    def from_service_account(cls, spreadsheet_id, service_account_json):
+        """service_account_json - fayl yo'li YOKI JSON matnining o'zi.
+
+        Railway kabi platformalarda fayl yuklab bo'lmaydi - muhit
+        o'zgaruvchisiga service account kalitining butun JSON matni
+        to'g'ridan-to'g'ri qo'yiladi. Mahalliy ishlab chiqishda esa
+        odatiy fayl yo'li ishlatiladi."""
+        if is_inline_json(service_account_json):
+            info = json.loads(service_account_json)
+            creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+        else:
+            creds = service_account.Credentials.from_service_account_file(
+                service_account_json, scopes=SCOPES
+            )
         service = build("sheets", "v4", credentials=creds)
         return cls(spreadsheet_id, service.spreadsheets().values())
 

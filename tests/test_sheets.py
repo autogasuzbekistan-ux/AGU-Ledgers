@@ -3,7 +3,7 @@ from datetime import date
 from fake_sheets_service import FakeValuesService
 
 from ledger import DailyEntry
-from sheets import SheetsClient
+from sheets import SheetsClient, is_inline_json
 
 
 def _entry(sana, naqd_som=0, naqd_dollar=0, qarz_boshida_dollar=0):
@@ -82,6 +82,13 @@ def test_read_all_entries_groups_by_kontragent_and_sorts():
     assert set(result.keys()) == {"rashid", "alisher"}
     assert [e.sana for e in result["rashid"]] == [date(2026, 8, 1), date(2026, 8, 2)]
     assert [e.sana for e in result["alisher"]] == [date(2026, 8, 1)]
+
+
+def test_is_inline_json_distinguishes_path_from_json_content():
+    assert is_inline_json('{"type": "service_account"}') is True
+    assert is_inline_json('  {"type": "service_account"}  ') is True
+    assert is_inline_json("service_account.json") is False
+    assert is_inline_json("/path/to/service_account.json") is False
 
 
 def test_get_and_set_kurs_roundtrip():
