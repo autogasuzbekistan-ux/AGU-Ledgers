@@ -82,6 +82,7 @@ MENU_UPLOAD = "\U0001F4E5 Fayl yuborish"
 MENU_MANUAL = "✍️ Qo'lda kiritish"
 MENU_EDIT = "✏️ Tahrirlash"
 MENU_DEBTORS = "\U0001F4CA Qarzdorlar"
+MENU_KURS = "\U0001F4B1 Kurs"
 
 
 class EntryStates(StatesGroup):
@@ -91,6 +92,10 @@ class EntryStates(StatesGroup):
     waiting_delayed_date = State()
     confirm_summary = State()
     confirm_large_amount = State()
+
+
+class KursStates(StatesGroup):
+    updating = State()
 
 
 class EditStates(StatesGroup):
@@ -177,6 +182,7 @@ def _main_menu_keyboard():
         keyboard=[
             [KeyboardButton(text=MENU_UPLOAD), KeyboardButton(text=MENU_MANUAL)],
             [KeyboardButton(text=MENU_EDIT), KeyboardButton(text=MENU_DEBTORS)],
+            [KeyboardButton(text=MENU_KURS)],
         ],
         resize_keyboard=True,
     )
@@ -499,6 +505,32 @@ def build_router():
     @router.message(F.text == MENU_DEBTORS)
     async def on_menu_debtors(message: Message, sheets, aliases_registry):
         await _do_qarzdorlar(message, sheets, aliases_registry)
+
+    # -------------------------------------------------------------
+    # Kurs: joriy kursni ko'rsatish va yangisini kiritish
+    # -------------------------------------------------------------
+    @router.message(F.text == MENU_KURS)
+    async def on_menu_kurs(message: Message, state: FSMContext, sheets):
+        sana = date.today()
+        joriy = sheets.get_kurs(sana)
+        await state.set_state(KursStates.updating)
+        await state.update_data(kurs_sana=sana.isoformat())
+        if joriy is not None:
+            await message.answer(f"Joriy kurs ({sana.isoformat()}): {joriy}\nYangi qiymatni yuboring.")
+        else:
+            await message.answer(f"{sana.isoformat()} uchun kursni kiriting.")
+
+    @router.message(KursStates.updating)
+    async def on_kurs_update_answer(message: Message, state: FSMContext, sheets):
+        kurs = _parse_number(message.text)
+        if kurs is None or kurs <= 0:
+            await message.answer("Noto'g'ri qiymat. Kursni raqam bilan yuboring.")
+            return
+        data = await state.get_data()
+        sana = date.fromisoformat(data["kurs_sana"])
+        sheets.set_kurs(sana, kurs)
+        await state.clear()
+        await message.answer(f"Kurs yangilandi: {kurs}", reply_markup=_main_menu_keyboard())
 
     # -------------------------------------------------------------
     # Tahrirlash: kontragent + sanani tanlab, mavjud yozuvni tuzatish
