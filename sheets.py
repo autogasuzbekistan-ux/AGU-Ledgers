@@ -35,7 +35,23 @@ LEDGER_HEADERS = [
     "chegirma_som", "kurs", "qarz_boshida_som", "qarz_boshida_dollar",
     "jami_qabul_som", "jami_qabul_dollar", "qolgan_qarz_som", "qolgan_qarz_dollar",
 ]
-LEDGER_LAST_COLUMN = "N"  # LEDGER_HEADERS uzunligiga mos (14-ustun)
+
+
+def _column_letter(index):
+    """1-asosli ustun raqamini spreadsheet harfiga aylantiradi (1->A,
+    14->N, 27->AA, ...)."""
+    letters = ""
+    while index > 0:
+        index, remainder = divmod(index - 1, 26)
+        letters = chr(65 + remainder) + letters
+    return letters
+
+
+# LEDGER_HEADERS uzunligidan avtomatik hisoblanadi - qo'lda yozilgan
+# harf bilan ro'yxat uzunligi orasida moslikni saqlash uchun (yangi
+# maydon qo'shilsa-yu bu qiymat yangilanmasa, update_entry oxirgi
+# ustun(lar)ni jimgina yozmay qoldirar edi).
+LEDGER_LAST_COLUMN = _column_letter(len(LEDGER_HEADERS))
 
 
 def is_inline_json(service_account_json):

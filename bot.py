@@ -13,6 +13,7 @@ Ishga tushirish: `.env` to'ldirilgach `python3 bot.py`.
 import asyncio
 import calendar
 import logging
+import os
 from datetime import date, timedelta
 
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
@@ -55,7 +56,7 @@ from notifications import (
     format_morning_digest,
     format_upload_diff,
 )
-from parsers import parse_click_file, parse_hisobot_file, parse_report_file
+from parsers import parse_click_file, parse_hisobot_file
 from sheets import SheetsClient
 
 logging.basicConfig(level=logging.INFO)
@@ -242,6 +243,17 @@ def build_router():
 
     async def _do_kirim(message: Message, state: FSMContext, sheets, aliases_registry):
         sana = date.today()
+        # flow'ni _ensure_kurs'dan OLDIN "auto"ga o'rnatish shart - agar
+        # kurs shu kun uchun hali noma'lum bo'lsa, _ensure_kurs
+        # waiting_kurs holatiga o'tadi va on_kurs_answer keyinroq shu
+        # "flow" qiymatiga qarab qaysi kontragentga davom etishni
+        # tanlaydi. Agar bu yerda o'rnatilmasa, avvalgi (masalan
+        # abandon qilingan "Tahrirlash") sessiyadan qolgan eski
+        # flow="single" + edit_kontragent_id qiymatlari saqlanib qolib,
+        # /kirim shu eski (noto'g'ri) kontragent uchun yakka yozuv
+        # boshlab, qolgan barcha kontragentlarni jimgina o'tkazib
+        # yuborishi mumkin edi.
+        await state.update_data(flow="auto")
         kurs = await _ensure_kurs(message, state, sheets, sana)
         if kurs is None:
             return
@@ -267,6 +279,10 @@ def build_router():
         if sana is None:
             await message.answer("Sana tushunilmadi. Format: KK.OO.YYYY (masalan 15.08.2026)")
             return
+        # _do_kirim'dagi kabi - flow'ni _ensure_kurs'dan oldin "auto"ga
+        # o'rnatish, eski (masalan abandon qilingan "Tahrirlash")
+        # sessiyadan qolgan flow="single" qiymati sizib chiqmasligi uchun.
+        await state.update_data(flow="auto")
         kurs = await _ensure_kurs(message, state, sheets, sana)
         if kurs is None:
             return
@@ -497,32 +513,89 @@ def build_router():
             return "hisobot"
         return "report"
 
+    def _merge_upload_values(a, b):
+        """Bitta faylda ikki xil nom (alias) bitta kontragent_id'ga mos
+        kelib qolsa (masalan ikkala yozilishi ham bir kishiga bog'langan
+        bo'lsa), ikkinchisi birinchisini USTIDAN YOZIB YUBORMASLIGI kerak -
+        aks holda bitta summa jimgina yo'qolib qoladi. Shuning uchun
+        to'qnashuvda qiymatlar bir-biriga QO'SHILADI (dict bo'lsa - har bir
+        maydon alohida, skalyar bo'lsa - to'g'ridan-to'g'ri)."""
+        if isinstance(a, dict):
+            return {k: a.get(k, 0) + b.get(k, 0) for k in set(a) | set(b)}
+        return a + b
+
     @router.message(F.document)
     async def on_document(message: Message, state: FSMContext, bot: Bot, cfg, sheets, aliases_registry, audit):
         document: Document = message.document
         kind = _detect_file_kind(document.file_name or "")
+
+        if kind == "report":
+            # parse_report_file "kun_varag_nomi -> qiymat" ko'rinishida
+            # qaytaradi (bitta kontragentning oylik fayli, 31 kunlik varaq) -
+            # bu umumiy fayl-yuklash oqimi kutgan "kontragent_nomi -> qiymat"
+            # shaklidan butunlay farq qiladi (fayl QAYSI kontragentga
+            # tegishli ekani ham bu yerda aniqlanmaydi). Shu nomuvofiqlik
+            # tufayli avval bu yo'l xatosiz, lekin NOTO'G'RI ishlar edi -
+            # kun raqamlarini kontragent nomi sifatida hal qilishga urinib,
+            # hech narsani mos kelmasdan "o'zgarish topilmadi" deb noto'g'ri
+            # xabar berardi. Bu format uchun alohida oqim hali yozilmagan -
+            # shuning uchun jim noto'g'ri ishlash o'rniga ochiq xabar beriladi.
+            await message.answer(
+                "Bu fayl 'Абдуллох' formatidagi (har kontragent uchun alohida "
+                "oylik fayl) ko'rinadi - bu format uchun avtomatik yuklash hali "
+                "ulanmagan (qaysi kontragentga tegishli ekani aniqlanmaydi). "
+                "Iltimos loyiha egasiga murojaat qiling."
+            )
+            return
+
         tmp_path = f"/tmp/{document.file_id}_{document.file_name}"
         file = await bot.get_file(document.file_id)
         await bot.download_file(file.file_path, destination=tmp_path)
 
         try:
-            if kind == "click":
-                raw, kurs = parse_click_file(tmp_path)
-                if kurs:
-                    sheets.set_kurs(date.today(), kurs)
-            elif kind == "hisobot":
-                raw = parse_hisobot_file(tmp_path)
-            else:
-                raw = parse_report_file(tmp_path)
-        except ValueError as exc:
-            await message.answer(f"Faylni o'qib bo'lmadi: {exc}")
-            return
-
-        resolved, tekshirish_kerak = aliases_registry.resolve_many(raw.keys())
-        by_id = {aliases_registry.resolve(name): raw[name] for name in resolved}
+            try:
+                if kind == "click":
+                    raw, kurs = parse_click_file(tmp_path)
+                    if kurs:
+                        sheets.set_kurs(date.today(), kurs)
+                else:
+                    raw = parse_hisobot_file(tmp_path)
+            except ValueError as exc:
+                await message.answer(f"Faylni o'qib bo'lmadi: {exc}")
+                return
+        finally:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
         sana = date.today()
         kurs_bugun = sheets.get_kurs(sana)
+        if kurs_bugun is None:
+            # Kurs kuniga bir marta so'raladi va shu kunning BARCHA
+            # yozuvlariga qo'llanadi (6-bo'lim) - agar bu yerda kurssiz
+            # davom etilsa, fayldan yaratilgan yozuvlar kurs=None bilan
+            # doimiy saqlanib qoladi va dollar ekvivalenti keyinchalik ham
+            # to'g'rilanmaydi (Kurslar varag'iga keyinroq kurs kiritilsa
+            # ham, allaqachon yozilgan qatorlar o'zgarmaydi).
+            await message.answer(
+                "Bu kun uchun hali kurs kiritilmagan - avval /kirim (yoki "
+                "\"Qo'lda kiritish\") orqali bugungi kursni kiriting, so'ngra "
+                "faylni qayta yuboring."
+            )
+            return
+
+        resolved, tekshirish_kerak = aliases_registry.resolve_many(raw.keys())
+        by_id = {}
+        for name in resolved:
+            kontragent_id = aliases_registry.resolve(name)
+            value = raw[name]
+            by_id[kontragent_id] = (
+                _merge_upload_values(by_id[kontragent_id], value)
+                if kontragent_id in by_id
+                else value
+            )
+
         # Solishtirish - avvalgi Telegram sessiyasidagi keshdan emas, balki
         # Sheets'da bugun uchun HAQIQATDA saqlangan qiymatdan (bot qayta
         # ishga tushsa ham to'g'ri ishlaydi, sessiyaga bog'liq emas).
@@ -550,8 +623,14 @@ def build_router():
         if not has_changes(diff):
             await message.answer("Fayl qayta tahlil qilindi - o'zgarish topilmadi.")
         else:
+            # FAQAT o'zgargan/yangi kontragentlar tasdiqdan keyin yoziladi -
+            # o'zgarmagan qolganlari tegilmaydi ("bitta kontragentda
+            # o'zgarish bo'lganda, faqat o'sha bitta qator aniqlanadi, qolgan
+            # hammasi tegilmaydi" - 6-bo'lim).
+            changed_ids = set(diff["ozgargan"]) | set(diff["yangi"])
+            pending_by_id = {kid: by_id[kid] for kid in changed_ids}
             await state.set_state(ReuploadStates.waiting_confirmation)
-            await state.update_data(pending_upload={"kind": kind, "kontragent_ids": by_id})
+            await state.update_data(pending_upload={"kind": kind, "kontragent_ids": pending_by_id})
             names_by_id = {kid: aliases_registry.rasmiy_nom(kid) for kid in by_id}
             lines = format_upload_diff(diff, names_by_id, kind, kurs_bugun, title="O'zgarishlar aniqlandi:")
             await message.answer("\n".join(lines), reply_markup=_reupload_keyboard())

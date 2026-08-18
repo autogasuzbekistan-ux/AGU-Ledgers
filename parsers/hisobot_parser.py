@@ -37,8 +37,12 @@ def parse_hisobot_file(path):
 
     result = {}
     for c, name in names.items():
+        # Har doim barcha 4 maydonni qaytaradi (row topilmasa - 0), xuddi
+        # report_parser.py kabi - shunda bot.py'dagi diff/qayta yuklash
+        # mantig'i (DailyEntry'ning barcha maydonlarini kutadi) qaysidir
+        # qator faylda yo'q bo'lib qolsa ham buzilmaydi.
         result[name] = {
-            field: (ws.cell(row=row_num, column=c).value or 0)
-            for field, row_num in rows.items()
+            field: (ws.cell(row=rows[field], column=c).value or 0) if field in rows else 0
+            for field in ROW_LABELS.values()
         }
     return result

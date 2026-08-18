@@ -55,3 +55,27 @@ def test_parse_hisobot_file_row_labels_are_case_insensitive(tmp_path):
         "terminal": 0,
         "click": 5000,
     }
+
+
+def test_parse_hisobot_file_defaults_missing_row_to_zero_for_all_fields(tmp_path):
+    # Fayldan "Plastik" qatori butunlay tushib qolgan kun - natija baribir
+    # barcha 4 maydonni o'z ichiga olishi kerak (terminal=0), report_parser
+    # bilan bir xil kafolat: DailyEntry/diff mantig'i har doim to'liq
+    # {naqd_som, click, naqd_dollar, terminal} dict kutadi.
+    wb = Workbook()
+    ws = wb.active
+    ws.append([None, "Rashid aka"])
+    ws.append(["naqt", 100000])
+    ws.append(["Qog'oz", 20])
+    ws.append(["click", 5000])
+    path = tmp_path / "hisobot_no_plastik.xlsx"
+    wb.save(path)
+
+    result = parse_hisobot_file(path)
+
+    assert result["Rashid aka"] == {
+        "naqd_som": 100000,
+        "naqd_dollar": 20,
+        "terminal": 0,
+        "click": 5000,
+    }
