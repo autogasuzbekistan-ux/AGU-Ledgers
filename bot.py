@@ -40,6 +40,7 @@ from audit import AuditLog
 from bot_logic import (
     apply_entry,
     compute_pending_kontragents,
+    daily_payments_summary,
     days_since_last_payment,
     has_prior_entry,
     is_unusually_large_amount,
@@ -496,15 +497,16 @@ def build_router():
     async def _do_qarzdorlar(message: Message, sheets, aliases_registry):
         entries_by_kontragent = sheets.read_all_entries()
         debtors = top_debtors(entries_by_kontragent, aliases_registry, top_n=None)
-        if not debtors:
-            await message.answer("Qarzdorlar ro'yxati bo'sh.", reply_markup=_main_menu_keyboard())
+        daily_rows = daily_payments_summary(entries_by_kontragent)
+        if not debtors and not daily_rows:
+            await message.answer("Hali hech qanday ma'lumot yo'q.", reply_markup=_main_menu_keyboard())
             return
 
         sana = date.today()
         path = f"/tmp/qarzdorlar_{sana.isoformat()}.xlsx"
         try:
-            build_debtors_report(debtors, path, sana=sana)
-            jami_qarz = sum(qarz for _, qarz, _ in debtors)
+            build_debtors_report(debtors, daily_rows, path, sana=sana)
+            jami_qarz = sum(qarz for _, qarz, _, _ in debtors)
             await message.answer_document(
                 FSInputFile(path, filename=f"qarzdorlar_{sana.isoformat()}.xlsx"),
                 caption=f"Qarzdorlar: {len(debtors)} ta, jami ${jami_qarz:,.2f}",
@@ -826,6 +828,7 @@ def _entry_from_dict(d):
 async def send_morning_digest(bot: Bot, cfg: Config, sheets: SheetsClient, aliases_registry: AliasRegistry):
     entries_by_kontragent = sheets.read_all_entries()
     debtors = top_debtors(entries_by_kontragent, aliases_registry, top_n=None)
+    daily_rows = daily_payments_summary(entries_by_kontragent)
     today = date.today()
 
     alerts = []
@@ -839,11 +842,11 @@ async def send_morning_digest(bot: Bot, cfg: Config, sheets: SheetsClient, alias
             if latest.qolgan_qarz_dollar > cfg.debt_alert_threshold_usd:
                 alerts.append(format_alert_debt_threshold(nomi, latest.qolgan_qarz_dollar, cfg.debt_alert_threshold_usd))
 
-    if debtors:
+    if debtors or daily_rows:
         path = f"/tmp/qarzdorlar_{today.isoformat()}.xlsx"
         try:
-            build_debtors_report(debtors, path, sana=today)
-            jami_qarz = sum(qarz for _, qarz, _ in debtors)
+            build_debtors_report(debtors, daily_rows, path, sana=today)
+            jami_qarz = sum(qarz for _, qarz, _, _ in debtors)
             caption = f"Ertalabki qarzdorlar hisoboti: {len(debtors)} ta, jami ${jami_qarz:,.2f}"
             for admin_id in cfg.allowed_telegram_ids:
                 await bot.send_document(admin_id, FSInputFile(path, filename=f"qarzdorlar_{today.isoformat()}.xlsx"), caption=caption)

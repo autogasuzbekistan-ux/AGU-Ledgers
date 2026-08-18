@@ -65,8 +65,10 @@ def parse_manual_date(text):
 def top_debtors(entries_by_kontragent, aliases_registry, top_n=10):
     """entries_by_kontragent: {kontragent_id: [DailyEntry, ...]} (har
     kontragentning barcha tarixi). Qaytaradi: [(rasmiy_nom, qarz_dollar,
-    oxirgi_tolov_sana_yoki_None), ...] - eng katta qarzdan boshlab
-    saralangan, faqat haqiqiy qarzi (musbat) borlar (avans chiqarilmaydi).
+    oxirgi_tolov_sana_yoki_None, oxirgi_tolov_summa_dollar), ...] - eng
+    katta qarzdan boshlab saralangan, faqat haqiqiy qarzi (musbat)
+    borlar (avans chiqarilmaydi). To'lov umuman bo'lmagan bo'lsa
+    oxirgi_tolov_summa 0.
 
     top_n=None - cheklovsiz, BARCHA qarzdorlar qaytariladi (masalan
     to'liq Excel hisobot uchun - chat xabaridagi qisqartirilgan
@@ -80,18 +82,44 @@ def top_debtors(entries_by_kontragent, aliases_registry, top_n=10):
         if latest.qolgan_qarz_dollar <= 0:
             continue
 
-        oxirgi_tolov = None
+        oxirgi_tolov_sana = None
+        oxirgi_tolov_summa = 0
         for entry in reversed(ordered):
             if entry.jami_qabul_dollar > 0 or entry.jami_qabul_som > 0:
-                oxirgi_tolov = entry.sana
+                oxirgi_tolov_sana = entry.sana
+                oxirgi_tolov_summa = received_usd_equivalent(entry)
                 break
 
-        debtors.append(
-            (aliases_registry.rasmiy_nom(kontragent_id), latest.qolgan_qarz_dollar, oxirgi_tolov)
-        )
+        debtors.append((
+            aliases_registry.rasmiy_nom(kontragent_id), latest.qolgan_qarz_dollar,
+            oxirgi_tolov_sana, oxirgi_tolov_summa,
+        ))
 
     debtors.sort(key=lambda t: t[1], reverse=True)
     return debtors if top_n is None else debtors[:top_n]
+
+
+def daily_payments_summary(entries_by_kontragent):
+    """Barcha kontragentlar bo'yicha kunlik jami tushumni jamlaydi.
+
+    Qaytaradi: [(sana, naqd_som, click, terminal, naqd_dollar, jami_usd), ...]
+    - sana bo'yicha KAMAYISH tartibida (eng so'nggi kun birinchi)."""
+    daily = {}
+    for entries in entries_by_kontragent.values():
+        for entry in entries:
+            acc = daily.setdefault(entry.sana, {
+                "naqd_som": 0, "click": 0, "terminal": 0, "naqd_dollar": 0, "usd": 0,
+            })
+            acc["naqd_som"] += entry.naqd_som
+            acc["click"] += entry.click
+            acc["terminal"] += entry.terminal
+            acc["naqd_dollar"] += entry.naqd_dollar
+            acc["usd"] += received_usd_equivalent(entry)
+
+    return [
+        (sana, acc["naqd_som"], acc["click"], acc["terminal"], acc["naqd_dollar"], acc["usd"])
+        for sana, acc in sorted(daily.items(), key=lambda item: item[0], reverse=True)
+    ]
 
 
 def days_since_last_payment(entries, today):

@@ -49,10 +49,13 @@ def test_format_entry_confirmation_shows_avans_when_negative():
 def test_format_morning_digest_empty_and_nonempty():
     assert format_morning_digest([]) == "Bugun qarzdorlar ro'yxati bo'sh."
 
-    text = format_morning_digest([("Rashid aka", 950.5, date(2026, 8, 1)), ("Bobur aka", 200, None)])
+    text = format_morning_digest([
+        ("Rashid aka", 950.5, date(2026, 8, 1), 50.0),
+        ("Bobur aka", 200, None, 0),
+    ])
 
-    assert "1. Rashid aka - $950.50 (oxirgi to'lov: 2026-08-01)" in text
-    assert "2. Bobur aka - $200.00 (oxirgi to'lov: ma'lum emas)" in text
+    assert "1. Rashid aka - $950.50 (oxirgi to'lov: 2026-08-01, $50.00)" in text
+    assert "2. Bobur aka - $200.00 (oxirgi to'lov: ma'lum emas, $0.00)" in text
 
 
 def test_format_month_end_summary():

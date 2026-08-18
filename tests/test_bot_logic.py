@@ -4,6 +4,7 @@ from aliases import AliasRegistry
 from bot_logic import (
     apply_entry,
     compute_pending_kontragents,
+    daily_payments_summary,
     days_since_last_payment,
     has_prior_entry,
     is_unusually_large_amount,
@@ -62,8 +63,8 @@ def test_top_debtors_sorts_descending_and_excludes_non_debtors():
     result = top_debtors(entries_by_kontragent, _registry())
 
     assert result == [
-        ("Alisher aka", 500, date(2026, 8, 1)),
-        ("Rashid aka", 100, date(2026, 8, 1)),
+        ("Alisher aka", 500, date(2026, 8, 1), 5),
+        ("Rashid aka", 100, date(2026, 8, 1), 10),
     ]
 
 
@@ -83,7 +84,7 @@ def test_top_debtors_respects_top_n_and_finds_last_actual_payment_date():
 
     result = top_debtors(entries_by_kontragent, _registry(), top_n=1)
 
-    assert result == [("Rashid aka", 450, date(2026, 8, 1))]
+    assert result == [("Rashid aka", 450, date(2026, 8, 1), 50)]
 
 
 def test_top_debtors_top_n_none_returns_everyone():
@@ -95,6 +96,36 @@ def test_top_debtors_top_n_none_returns_everyone():
     result = top_debtors(entries_by_kontragent, _registry(), top_n=None)
 
     assert len(result) == 2
+
+
+def test_daily_payments_summary_aggregates_across_kontragents_and_sorts_descending():
+    entries_by_kontragent = {
+        "rashid": [
+            DailyEntry(sana=date(2026, 8, 1), kontragent_id="rashid", naqd_som=128000, naqd_dollar=5, kurs=12800).compute(),
+            DailyEntry(sana=date(2026, 8, 2), kontragent_id="rashid", naqd_som=64000, kurs=12800).compute(),
+        ],
+        "alisher": [
+            DailyEntry(sana=date(2026, 8, 1), kontragent_id="alisher", click=12800, terminal=0, kurs=12800).compute(),
+        ],
+    }
+
+    result = daily_payments_summary(entries_by_kontragent)
+
+    assert [row[0] for row in result] == [date(2026, 8, 2), date(2026, 8, 1)]
+    # 2026-08-02: faqat rashid, naqd_som=64000
+    assert result[0] == (date(2026, 8, 2), 64000, 0, 0, 0, 5.0)
+    # 2026-08-01: rashid (som=128000,dollar=5) + alisher (click=12800)
+    naqd_som, click, terminal, naqd_dollar, jami_usd = result[1][1:]
+    assert naqd_som == 128000
+    assert click == 12800
+    assert terminal == 0
+    assert naqd_dollar == 5
+    # rashid: 128000/12800 + 5 = 15; alisher: 12800/12800 = 1; jami = 16
+    assert jami_usd == 16.0
+
+
+def test_daily_payments_summary_empty():
+    assert daily_payments_summary({}) == []
 
 
 def test_apply_entry_inserts_new_day_and_cascades_recalculation():

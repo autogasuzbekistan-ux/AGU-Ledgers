@@ -79,17 +79,21 @@ def format_upload_diff(diff, names_by_id, kind, kurs, title=None):
 
 def format_morning_digest(top_debtors):
     """Har kuni ertalab: eng katta qarzdorlar (oy bo'yicha jami + oxirgi
-    to'lov), to'liq ro'yxat dashboard'da.
+    to'lov sanasi va summasi), to'liq ro'yxat dashboard'da.
 
-    top_debtors: [(kontragent_nomi, qarz_dollar, oxirgi_tolov_sana_yoki_None), ...]
-    eng kattadan boshlab saralangan (bot_logic.top_debtors natijasi)."""
+    top_debtors: [(kontragent_nomi, qarz_dollar, oxirgi_tolov_sana_yoki_None,
+    oxirgi_tolov_summa_dollar), ...] eng kattadan boshlab saralangan
+    (bot_logic.top_debtors natijasi)."""
     if not top_debtors:
         return "Bugun qarzdorlar ro'yxati bo'sh."
 
     lines = ["Eng katta qarzdorlar:"]
-    for i, (nomi, qarz, oxirgi_tolov) in enumerate(top_debtors, start=1):
+    for i, (nomi, qarz, oxirgi_tolov, oxirgi_tolov_summa) in enumerate(top_debtors, start=1):
         oxirgi = oxirgi_tolov.isoformat() if oxirgi_tolov else "ma'lum emas"
-        lines.append(f"{i}. {nomi} - ${_fmt(qarz, 2)} (oxirgi to'lov: {oxirgi})")
+        lines.append(
+            f"{i}. {nomi} - ${_fmt(qarz, 2)} "
+            f"(oxirgi to'lov: {oxirgi}, ${_fmt(oxirgi_tolov_summa, 2)})"
+        )
     return "\n".join(lines)
 
 
