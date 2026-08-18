@@ -555,9 +555,12 @@ def build_router():
         try:
             try:
                 if kind == "click":
-                    raw, kurs = parse_click_file(tmp_path)
-                    if kurs:
-                        sheets.set_kurs(date.today(), kurs)
+                    # DIQQAT: Click fayldagi kurs Sheets'ga AVTOMATIK
+                    # yozilmaydi - loyiha egasi kursni doim o'zi qo'lda
+                    # kiritadi (bot.py 6-bo'lim: kurs kuniga bir marta
+                    # so'raladi). Fayldagi kurs faqat solishtirish uchun
+                    # ko'rsatiladi (pastda).
+                    raw, kurs_faylda = parse_click_file(tmp_path)
                 else:
                     raw = parse_hisobot_file(tmp_path)
             except ValueError as exc:
@@ -584,6 +587,13 @@ def build_router():
                 "faylni qayta yuboring."
             )
             return
+
+        if kind == "click" and kurs_faylda and kurs_faylda != kurs_bugun:
+            await message.answer(
+                f"Diqqat: fayldagi kurs ({kurs_faylda}) siz kiritgan kursdan "
+                f"({kurs_bugun}) farq qiladi. Hisob-kitob siz kiritgan kurs "
+                f"({kurs_bugun}) bo'yicha olib boriladi."
+            )
 
         resolved, tekshirish_kerak = aliases_registry.resolve_many(raw.keys())
         by_id = {}
