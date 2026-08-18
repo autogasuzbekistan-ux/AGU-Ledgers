@@ -26,7 +26,9 @@ from aiogram.types import (
     Document,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    KeyboardButton,
     Message,
+    ReplyKeyboardMarkup,
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -69,6 +71,11 @@ OY_NOMLARI_UZ = [
     "Iyul", "Avgust", "Sentabr", "Oktabr", "Noyabr", "Dekabr",
 ]
 
+MENU_UPLOAD = "\U0001F4E5 Fayl yuborish"
+MENU_MANUAL = "✍️ Qo'lda kiritish"
+MENU_EDIT = "✏️ Tahrirlash"
+MENU_DEBTORS = "\U0001F4CA Qarzdorlar"
+
 
 class EntryStates(StatesGroup):
     waiting_kurs = State()
@@ -77,6 +84,11 @@ class EntryStates(StatesGroup):
     waiting_delayed_date = State()
     confirm_summary = State()
     confirm_large_amount = State()
+
+
+class EditStates(StatesGroup):
+    waiting_kontragent = State()
+    waiting_date = State()
 
 
 class ReuploadStates(StatesGroup):
@@ -107,6 +119,16 @@ def _parse_number(text):
         return float(cleaned)
     except ValueError:
         return None
+
+
+def _main_menu_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=MENU_UPLOAD), KeyboardButton(text=MENU_MANUAL)],
+            [KeyboardButton(text=MENU_EDIT), KeyboardButton(text=MENU_DEBTORS)],
+        ],
+        resize_keyboard=True,
+    )
 
 
 def _cancel_keyboard():
@@ -152,9 +174,9 @@ def build_router():
     async def cmd_start(message: Message):
         await message.answer(
             "AGU Virtual Ofis botiga xush kelibsiz.\n"
-            "/kirim - bugungi to'lovlarni kiritish\n"
-            "/kechiktirilgan - o'tgan kunga yozuv kiritish\n"
-            "/qarzdorlar - joriy qarzdorlar ro'yxati"
+            "Quyidagi tugmalardan foydalaning, yoki /kechiktirilgan bilan "
+            "o'tgan kunga yozuv kiriting.",
+            reply_markup=_main_menu_keyboard(),
         )
 
     # -------------------------------------------------------------
@@ -170,6 +192,29 @@ def build_router():
         await target.answer(f"{sana.isoformat()} uchun bugungi kurs qancha?")
         return None
 
+    async def _begin_questions_for(message: Message, state: FSMContext, sheets, aliases_registry, kontragent_id, sana, flow):
+        """Berilgan kontragent+sana uchun savol-javob oqimini boshlaydi.
+        flow="auto" - /kirim orqali, tasdiqdan keyin keyingi kontragentga
+        o'tadi. flow="single" - "Tahrirlash" orqali, tasdiqdan keyin faqat
+        shu bitta yozuv saqlanadi."""
+        await state.update_data(
+            kontragent_id=kontragent_id, sana=sana.isoformat(), field_index=0, answers={}, flow=flow,
+        )
+        nomi = aliases_registry.rasmiy_nom(kontragent_id)
+
+        history = sheets.read_entries(kontragent_id)
+        if not has_prior_entry(history, sana):
+            await state.set_state(EntryStates.waiting_initial_qarz_dollar)
+            await message.answer(
+                f"{nomi} - bu birinchi yozuv. Boshlang'ich qarz (dollar) qancha? "
+                f"(so'm qarzi 0 dan boshlanadi)"
+            )
+            return
+
+        await state.set_state(EntryStates.waiting_field)
+        field_key, question = FIELD_QUESTIONS[0]
+        await message.answer(f"{nomi}\n{question}", reply_markup=_cancel_keyboard())
+
     async def _start_next_kontragent(message: Message, state: FSMContext, sheets, aliases_registry, sana):
         all_ids = [kid for kid, _ in aliases_registry.kontragentlar()]
         entries_today = sheets.read_all_entries()
@@ -180,37 +225,32 @@ def build_router():
         pending = compute_pending_kontragents(all_ids, done_today)
         if not pending:
             await state.clear()
-            await message.answer(f"{sana.isoformat()} uchun barcha kontragentlar kiritildi.")
-            return
-
-        kontragent_id = pending[0]
-        await state.update_data(
-            kontragent_id=kontragent_id, sana=sana.isoformat(), field_index=0, answers={},
-        )
-
-        history = sheets.read_entries(kontragent_id)
-        if not has_prior_entry(history, sana):
-            await state.set_state(EntryStates.waiting_initial_qarz_dollar)
-            nomi = aliases_registry.rasmiy_nom(kontragent_id)
             await message.answer(
-                f"{nomi} - bu birinchi yozuv. Boshlang'ich qarz (dollar) qancha? "
-                f"(so'm qarzi 0 dan boshlanadi)"
+                f"{sana.isoformat()} uchun barcha kontragentlar kiritildi.",
+                reply_markup=_main_menu_keyboard(),
             )
             return
 
-        await state.set_state(EntryStates.waiting_field)
-        nomi = aliases_registry.rasmiy_nom(kontragent_id)
-        field_key, question = FIELD_QUESTIONS[0]
-        await message.answer(f"{nomi}\n{question}", reply_markup=_cancel_keyboard())
+        await _begin_questions_for(message, state, sheets, aliases_registry, pending[0], sana, flow="auto")
 
-    @router.message(Command("kirim"))
-    async def cmd_kirim(message: Message, state: FSMContext, sheets, aliases_registry):
+    async def _start_single_entry(message: Message, state: FSMContext, sheets, aliases_registry, kontragent_id, sana):
+        await _begin_questions_for(message, state, sheets, aliases_registry, kontragent_id, sana, flow="single")
+
+    async def _do_kirim(message: Message, state: FSMContext, sheets, aliases_registry):
         sana = date.today()
         kurs = await _ensure_kurs(message, state, sheets, sana)
         if kurs is None:
             return
         await state.update_data(sana=sana.isoformat())
         await _start_next_kontragent(message, state, sheets, aliases_registry, sana)
+
+    @router.message(Command("kirim"))
+    async def cmd_kirim(message: Message, state: FSMContext, sheets, aliases_registry):
+        await _do_kirim(message, state, sheets, aliases_registry)
+
+    @router.message(F.text == MENU_MANUAL)
+    async def on_menu_manual(message: Message, state: FSMContext, sheets, aliases_registry):
+        await _do_kirim(message, state, sheets, aliases_registry)
 
     @router.message(Command("kechiktirilgan"))
     async def cmd_kechiktirilgan(message: Message, state: FSMContext):
@@ -240,7 +280,11 @@ def build_router():
         sheets.set_kurs(sana, kurs)
         await message.answer(f"Kurs saqlandi: {kurs}")
         await state.update_data(sana=sana.isoformat())
-        await _start_next_kontragent(message, state, sheets, aliases_registry, sana)
+
+        if data.get("flow") == "single":
+            await _start_single_entry(message, state, sheets, aliases_registry, data["edit_kontragent_id"], sana)
+        else:
+            await _start_next_kontragent(message, state, sheets, aliases_registry, sana)
 
     @router.message(EntryStates.waiting_initial_qarz_dollar)
     async def on_initial_qarz(message: Message, state: FSMContext):
@@ -322,6 +366,7 @@ def build_router():
         entry = _entry_from_dict(data["pending_entry"])
         kontragent_id = entry.kontragent_id
         sana = entry.sana
+        flow = data.get("flow", "auto")
 
         history = sheets.read_entries(kontragent_id)
         was_correction = any(e.sana == sana for e in history)
@@ -343,7 +388,11 @@ def build_router():
             for admin_id in [aid for aid in cfg.allowed_telegram_ids if aid != actor_id]:
                 await message.bot.send_message(admin_id, alert)
 
-        await _start_next_kontragent(message, state, sheets, aliases_registry, sana)
+        if flow == "single":
+            await state.clear()
+            await message.answer("Saqlandi.", reply_markup=_main_menu_keyboard())
+        else:
+            await _start_next_kontragent(message, state, sheets, aliases_registry, sana)
 
     @router.callback_query(F.data == "confirm_entry", EntryStates.confirm_summary)
     async def on_confirm_entry(callback: CallbackQuery, state: FSMContext, cfg, sheets, aliases_registry, audit):
@@ -372,15 +421,70 @@ def build_router():
     # -------------------------------------------------------------
     # Qarzdorlar ro'yxati (qo'lda chaqirish)
     # -------------------------------------------------------------
-    @router.message(Command("qarzdorlar"))
-    async def cmd_qarzdorlar(message: Message, sheets, aliases_registry):
+    async def _do_qarzdorlar(message: Message, sheets, aliases_registry):
         entries_by_kontragent = sheets.read_all_entries()
         debtors = top_debtors(entries_by_kontragent, aliases_registry)
-        await message.answer(format_morning_digest(debtors))
+        await message.answer(format_morning_digest(debtors), reply_markup=_main_menu_keyboard())
+
+    @router.message(Command("qarzdorlar"))
+    async def cmd_qarzdorlar(message: Message, sheets, aliases_registry):
+        await _do_qarzdorlar(message, sheets, aliases_registry)
+
+    @router.message(F.text == MENU_DEBTORS)
+    async def on_menu_debtors(message: Message, sheets, aliases_registry):
+        await _do_qarzdorlar(message, sheets, aliases_registry)
+
+    # -------------------------------------------------------------
+    # Tahrirlash: kontragent + sanani tanlab, mavjud yozuvni tuzatish
+    # -------------------------------------------------------------
+    @router.message(F.text == MENU_EDIT)
+    async def on_menu_edit(message: Message, state: FSMContext):
+        await state.set_state(EditStates.waiting_kontragent)
+        await message.answer("Qaysi kontragentni tahrirlaysiz? Nomini yozing.")
+
+    @router.message(EditStates.waiting_kontragent)
+    async def on_edit_kontragent(message: Message, state: FSMContext, aliases_registry):
+        kontragent_id = aliases_registry.resolve(message.text)
+        if kontragent_id is None:
+            await message.answer("Kontragent topilmadi. Rasmiy nomni aniqroq yozing.")
+            return
+        await state.update_data(edit_kontragent_id=kontragent_id)
+        await state.set_state(EditStates.waiting_date)
+        await message.answer("Qaysi sanani tahrirlaysiz? (KK.OO.YYYY, masalan 15.08.2026)")
+
+    @router.message(EditStates.waiting_date)
+    async def on_edit_date(message: Message, state: FSMContext, sheets, aliases_registry):
+        sana = parse_manual_date(message.text)
+        if sana is None:
+            await message.answer("Sana tushunilmadi. Format: KK.OO.YYYY (masalan 15.08.2026)")
+            return
+
+        data = await state.get_data()
+        kontragent_id = data["edit_kontragent_id"]
+        nomi = aliases_registry.rasmiy_nom(kontragent_id)
+
+        history = sheets.read_entries(kontragent_id)
+        existing = next((e for e in history if e.sana == sana), None)
+        if existing is not None:
+            await message.answer(
+                format_entry_confirmation(existing, nomi) + "\n\nHozirgi holat shu. Yangi qiymatlarni kiriting."
+            )
+        else:
+            await message.answer(f"{nomi} uchun {sana.isoformat()} kunida hali yozuv yo'q - yangi kiritiladi.")
+
+        await state.update_data(flow="single")
+        kurs = await _ensure_kurs(message, state, sheets, sana)
+        if kurs is None:
+            return
+        await _start_single_entry(message, state, sheets, aliases_registry, kontragent_id, sana)
 
     # -------------------------------------------------------------
     # Fayl yuklash (Click / hisobot / "Абдуллох" formatidagi fayllar)
     # -------------------------------------------------------------
+    @router.message(F.text == MENU_UPLOAD)
+    async def on_menu_upload(message: Message):
+        await message.answer("Click yoki hisobot faylini (.xlsx) shu yerga yuboring.")
+
     def _detect_file_kind(filename):
         lowered = filename.lower()
         if lowered.startswith("click"):
@@ -468,13 +572,13 @@ def build_router():
         await state.set_state(None)
         audit.log_action(callback.from_user.id, "fayl_tasdiqlash", {"kind": pending["kind"]})
         await callback.answer()
-        await callback.message.answer("Saqlandi.")
+        await callback.message.answer("Saqlandi.", reply_markup=_main_menu_keyboard())
 
     @router.callback_query(F.data == "reupload_cancel", ReuploadStates.waiting_confirmation)
     async def on_reupload_cancel(callback: CallbackQuery, state: FSMContext):
         await state.set_state(None)
         await callback.answer()
-        await callback.message.answer("Bekor qilindi - hech narsa yozilmadi.")
+        await callback.message.answer("Bekor qilindi - hech narsa yozilmadi.", reply_markup=_main_menu_keyboard())
 
     return router
 
