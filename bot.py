@@ -147,12 +147,25 @@ class KursGateMiddleware(BaseMiddleware):
 
 
 def _parse_number(text):
-    """Foydalanuvchi kiritgan sonni o'qiydi (bo'sh joy/vergul ajratgichlar
-    bilan ham). Noto'g'ri bo'lsa yoki matn bo'lmasa (masalan foydalanuvchi
-    rasm/sticker yuborsa, message.text None bo'ladi) None qaytaradi."""
+    """Foydalanuvchi kiritgan sonni o'qiydi - bo'sh joy (minglik
+    ajratgichi) va vergul/nuqta (kasr ajratgichi, ikkala format ham:
+    "41850,00" YOKI "41.850,00" YOKI "41,850.00") bilan. Noto'g'ri bo'lsa
+    yoki matn bo'lmasa (masalan foydalanuvchi rasm/sticker yuborsa,
+    message.text None bo'ladi) None qaytaradi."""
     if text is None:
         return None
-    cleaned = text.strip().replace(" ", "").replace(",", ".")
+    cleaned = text.strip().replace(" ", "")
+    if not cleaned:
+        return None
+    if "," in cleaned and "." in cleaned:
+        if cleaned.rfind(",") > cleaned.rfind("."):
+            # vergul kasr ajratgichi ("41.850,00" - nuqta minglik)
+            cleaned = cleaned.replace(".", "").replace(",", ".")
+        else:
+            # nuqta kasr ajratgichi ("41,850.00" - vergul minglik)
+            cleaned = cleaned.replace(",", "")
+    else:
+        cleaned = cleaned.replace(",", ".")
     try:
         return float(cleaned)
     except ValueError:
