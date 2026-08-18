@@ -443,9 +443,7 @@ def build_router():
         history = sheets.read_entries(kontragent_id)
         was_correction = any(e.sana == sana for e in history)
         chain = apply_entry(history, entry)
-        for e in chain:
-            if e.sana >= sana:
-                sheets.update_entry(e)
+        sheets.update_entries([e for e in chain if e.sana >= sana])
 
         audit.log_action(actor_id, "tuzatish" if was_correction else "kiritish", {
             "kontragent_id": kontragent_id, "sana": sana.isoformat(),
@@ -739,8 +737,18 @@ def build_router():
         pending = data["pending_upload"]
         sana = date.today()
 
+        # Butun jadval BIR MARTA o'qiladi (har bir kontragent uchun alohida
+        # emas) va yozish uchun barcha yozuvlar bitta ro'yxatga yig'ilib,
+        # OXIRIDA bitta guruhli chaqiruv bilan saqlanadi - fayl yuklashda
+        # bir nechta kontragent o'zgargan bo'lsa, bu o'nlab ketma-ket
+        # Sheets chaqiruvi o'rniga atigi 2-3 tasini qoladi (sekinlikning
+        # asosiy sababi shu edi).
+        all_entries = sheets.read_all_entries()
+        kurs_bugun = sheets.get_kurs(sana)
+        to_write = []
+
         for kontragent_id, value in pending["kontragent_ids"].items():
-            history = sheets.read_entries(kontragent_id)
+            history = all_entries.get(kontragent_id, [])
             existing = next((e for e in history if e.sana == sana), None)
             kwargs = dict(existing.__dict__) if existing else {}
             if pending["kind"] == "click":
@@ -751,14 +759,14 @@ def build_router():
                 sana=sana, kontragent_id=kontragent_id,
                 naqd_som=kwargs.get("naqd_som", 0), click=kwargs.get("click", 0),
                 naqd_dollar=kwargs.get("naqd_dollar", 0), terminal=kwargs.get("terminal", 0),
-                chegirma_som=kwargs.get("chegirma_som", 0), kurs=sheets.get_kurs(sana),
+                chegirma_som=kwargs.get("chegirma_som", 0), kurs=kurs_bugun,
                 qarz_boshida_som=existing.qarz_boshida_som if existing else 0,
                 qarz_boshida_dollar=existing.qarz_boshida_dollar if existing else 0,
             )
             chain = apply_entry(history, entry)
-            for e in chain:
-                if e.sana >= sana:
-                    sheets.update_entry(e)
+            to_write.extend(e for e in chain if e.sana >= sana)
+
+        sheets.update_entries(to_write)
 
         await state.set_state(None)
         audit.log_action(callback.from_user.id, "fayl_tasdiqlash", {"kind": pending["kind"]})

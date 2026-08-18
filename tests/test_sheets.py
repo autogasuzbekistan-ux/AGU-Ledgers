@@ -70,6 +70,37 @@ def test_update_entry_appends_when_no_existing_row_found():
     assert entries[0].naqd_dollar == 10
 
 
+def test_update_entries_batches_multiple_updates_and_appends_in_one_call():
+    client = _client()
+    client.append_entry(_entry(date(2026, 8, 1), naqd_dollar=10, qarz_boshida_dollar=500))
+    client.append_entry(_entry(date(2026, 8, 2), naqd_dollar=20, qarz_boshida_dollar=490))
+    other = DailyEntry(sana=date(2026, 8, 1), kontragent_id="alisher", qarz_boshida_dollar=50).compute()
+    client.append_entry(other)
+
+    corrected_day1 = _entry(date(2026, 8, 1), naqd_dollar=15, qarz_boshida_dollar=500)
+    corrected_day2 = _entry(date(2026, 8, 2), naqd_dollar=25, qarz_boshida_dollar=485)
+    new_day3 = _entry(date(2026, 8, 3), naqd_dollar=5, qarz_boshida_dollar=460)
+
+    client.update_entries([corrected_day1, corrected_day2, new_day3])
+
+    entries = client.read_entries("rashid")
+    assert [e.sana for e in entries] == [date(2026, 8, 1), date(2026, 8, 2), date(2026, 8, 3)]
+    assert entries[0].naqd_dollar == 15
+    assert entries[1].naqd_dollar == 25
+    assert entries[2].naqd_dollar == 5
+    # boshqa kontragent tegilmagan
+    assert client.read_entries("alisher")[0].qarz_boshida_dollar == 50
+
+
+def test_update_entries_empty_list_is_a_noop():
+    client = _client()
+    client.append_entry(_entry(date(2026, 8, 1), naqd_dollar=10, qarz_boshida_dollar=500))
+
+    client.update_entries([])
+
+    assert len(client.read_entries("rashid")) == 1
+
+
 def test_read_all_entries_groups_by_kontragent_and_sorts():
     client = _client()
     client.append_entry(_entry(date(2026, 8, 2), naqd_dollar=10, qarz_boshida_dollar=100))

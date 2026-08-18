@@ -162,20 +162,58 @@ class SheetsClient:
     def update_entry(self, entry):
         """Mavjud (sana, kontragent_id) yozuvini topib, o'sha qatorni
         ustidan yozadi ('tuzatish' tugmasi uchun). Topilmasa - yangi
-        qator sifatida qo'shadi."""
+        qator sifatida qo'shadi.
+
+        Bir nechta yozuvni birdaniga yangilash kerak bo'lsa (masalan
+        zanjirli qayta hisoblash yoki fayl yuklash tasdig'i), buning
+        o'rniga update_entries()'ni ishlating - har bir yozuv uchun
+        alohida to'liq sheet o'qishning oldini oladi (sekinlik sababi)."""
+        self.update_entries([entry])
+
+    def update_entries(self, entries):
+        """Bir nechta yozuvni BITTA sheet o'qish va BITTA guruhli yozish
+        bilan yangilaydi - update_entry'ni ro'yxat bo'yicha aylanib
+        chaqirishning o'rniga (bu holda har biri o'zining to'liq sheet
+        o'qishini qilar edi, N ta yozuv uchun N marta to'liq jadval
+        o'qilar edi - fayl yuklash tasdig'ida yoki uzoq zanjirli
+        tuzatishda sezilarli sekinlikka olib kelardi)."""
+        entries = list(entries)
+        if not entries:
+            return
+
         rows = self._get_all_rows(LEDGER_SHEET)
-        target_key = (entry.sana.isoformat(), entry.kontragent_id)
-        for i, row in enumerate(rows):
-            if len(row) > 1 and (row[0], row[1]) == target_key:
-                row_number = i + 2  # 1-qator sarlavha, ma'lumot A2'dan boshlanadi
-                self._values.update(
-                    spreadsheetId=self.spreadsheet_id,
-                    range=f"{LEDGER_SHEET}!A{row_number}:{LEDGER_LAST_COLUMN}{row_number}",
-                    valueInputOption="RAW",
-                    body={"values": [_entry_to_row(entry)]},
-                ).execute()
-                return
-        self.append_entry(entry)
+        row_number_by_key = {
+            (row[0], row[1]): i + 2  # 1-qator sarlavha, ma'lumot A2'dan
+            for i, row in enumerate(rows) if len(row) > 1
+        }
+
+        data = []
+        to_append = []
+        for entry in entries:
+            key = (entry.sana.isoformat(), entry.kontragent_id)
+            row_number = row_number_by_key.get(key)
+            if row_number is None:
+                to_append.append(entry)
+            else:
+                data.append({
+                    "range": f"{LEDGER_SHEET}!A{row_number}:{LEDGER_LAST_COLUMN}{row_number}",
+                    "values": [_entry_to_row(entry)],
+                })
+
+        if data:
+            self._values.batchUpdate(
+                spreadsheetId=self.spreadsheet_id,
+                body={"valueInputOption": "RAW", "data": data},
+            ).execute()
+        if to_append:
+            # Bitta guruhli append - har biri uchun alohida chaqiruv emas.
+            self._values.append(
+                spreadsheetId=self.spreadsheet_id,
+                range=f"{LEDGER_SHEET}!A:A",
+                valueInputOption="RAW",
+                insertDataOption="INSERT_ROWS",
+                body={"values": [_entry_to_row(e) for e in to_append]},
+            ).execute()
 
     def get_kurs(self, sana):
         rows = self._get_all_rows(KURS_SHEET)

@@ -35,15 +35,25 @@ class FakeValuesService:
             return {}
         return _FakeRequest(_do)
 
+    def _write_range(self, range_str, values):
+        sheet_name, cell_range = range_str.split("!")
+        start_cell = cell_range.split(":")[0]
+        row_number = int("".join(ch for ch in start_cell if ch.isdigit()))
+        data_index = row_number - 2  # 1-qator sarlavha, A2 = data_index 0
+        rows = self.sheets.setdefault(sheet_name, [])
+        while len(rows) <= data_index:
+            rows.append([])
+        rows[data_index] = values[0]
+
     def update(self, spreadsheetId, range, valueInputOption, body):
         def _do():
-            sheet_name, cell_range = range.split("!")
-            start_cell = cell_range.split(":")[0]
-            row_number = int("".join(ch for ch in start_cell if ch.isdigit()))
-            data_index = row_number - 2  # 1-qator sarlavha, A2 = data_index 0
-            rows = self.sheets.setdefault(sheet_name, [])
-            while len(rows) <= data_index:
-                rows.append([])
-            rows[data_index] = body["values"][0]
+            self._write_range(range, body["values"])
+            return {}
+        return _FakeRequest(_do)
+
+    def batchUpdate(self, spreadsheetId, body):
+        def _do():
+            for item in body["data"]:
+                self._write_range(item["range"], item["values"])
             return {}
         return _FakeRequest(_do)
