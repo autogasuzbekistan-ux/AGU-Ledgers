@@ -1,0 +1,69 @@
+"""Kunlik hisobot faylini o'qish: naqd so'm / naqd dollar / plastik / click,
+har kuni keladigan kontragentlar bo'yicha.
+
+MUHIM: bu faylda 'Qog'oz' qatori = naqd DOLLAR (real fayllarda tasdiqlangan,
+kassa daftari bilan solishtirib). 'naqt' = naqd so'm.
+
+QO'SHIMCHA QATORLAR: ba'zi kunlarda standart 4 qatordan (naqt/Qog'oz/
+Plastik/click) tashqari, boshqa nomdagi qo'shimcha qator ham bo'lishi
+mumkin (masalan "Vizaga" - "toshkentdan o'tgan pul"). Bunday qatorning
+aniq nomi kelishi oldindan noma'lum (o'zgarishi mumkin) - shuning uchun
+aniq nom bo'yicha emas, "standart 4 nomdan tashqari har qanday qator"
+qoidasi bilan aniqlanadi. Loyiha egasi tasdiqlagan: bu doim DOLLARDA va
+real to'lov sifatida hisoblanadi (qarzni kamaytiradi) - shuning uchun
+naqd_dollar'ga qo'shiladi.
+"""
+from openpyxl import load_workbook
+
+ROW_LABELS = {
+    'naqt': 'naqd_som',
+    "qog'oz": 'naqd_dollar',
+    'plastik': 'terminal',
+    'click': 'click',
+}
+
+
+def parse_hisobot_file(path):
+    """Qaytaradi: {kontragent_nomi: {naqd_som, naqd_dollar, terminal, click}}
+
+    Maydon nomi 'terminal' (fayldagi 'Plastik' qatoridan) - report_parser.py
+    va ledger.DailyEntry bilan bir xil nomlanish, ikkalasi ham
+    on_reupload_confirm'da bir xil kalit ('terminal') orqali DailyEntry'ga
+    yoziladi. Standart 4 qatordan tashqari topilgan har qanday nomdagi
+    qo'shimcha qator(lar) naqd_dollar'ga qo'shiladi (yuqoridagi izohga
+    qarang)."""
+    wb = load_workbook(path, data_only=True)
+    ws = wb.active
+
+    names = {c: str(ws.cell(row=1, column=c).value).strip()
+             for c in range(2, ws.max_column + 1) if ws.cell(row=1, column=c).value}
+
+    rows = {}
+    extra_rows = []
+    for r in range(2, ws.max_row + 1):
+        label = ws.cell(row=r, column=1).value
+        if not label:
+            continue
+        key = str(label).strip().lower()
+        if key in ROW_LABELS:
+            rows[ROW_LABELS[key]] = r
+        else:
+            extra_rows.append(r)
+
+    result = {}
+    for c, name in names.items():
+        # Har doim barcha 4 maydonni qaytaradi (row topilmasa - 0), xuddi
+        # report_parser.py kabi - shunda bot.py'dagi diff/qayta yuklash
+        # mantig'i (DailyEntry'ning barcha maydonlarini kutadi) qaysidir
+        # qator faylda yo'q bo'lib qolsa ham buzilmaydi.
+        entry = {
+            field: (ws.cell(row=rows[field], column=c).value or 0) if field in rows else 0
+            for field in ROW_LABELS.values()
+        }
+        qoshimcha_dollar = sum(
+            value for r in extra_rows
+            if isinstance(value := ws.cell(row=r, column=c).value, (int, float))
+        )
+        entry['naqd_dollar'] += qoshimcha_dollar
+        result[name] = entry
+    return result

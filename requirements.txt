@@ -1,0 +1,6 @@
+openpyxl>=3.1
+aiogram>=3.7
+google-api-python-client>=2.100
+google-auth>=2.23
+python-dotenv>=1.0
+APScheduler>=3.10
