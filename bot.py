@@ -21,6 +21,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
+    BotCommand,
     CallbackQuery,
     Document,
     InlineKeyboardButton,
@@ -580,6 +581,13 @@ async def main():
         args=[bot, cfg, sheets],
     )
     scheduler.start()
+
+    await bot.set_my_commands([
+        BotCommand(command="kirim", description="Bugungi to'lovlarni kiritish"),
+        BotCommand(command="kechiktirilgan", description="O'tgan kunga yozuv kiritish"),
+        BotCommand(command="qarzdorlar", description="Joriy qarzdorlar ro'yxati"),
+        BotCommand(command="start", description="Botni boshlash"),
+    ])
 
     await dp.start_polling(bot)
 
