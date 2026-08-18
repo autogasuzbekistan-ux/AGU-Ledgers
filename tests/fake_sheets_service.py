@@ -18,7 +18,11 @@ class FakeValuesService:
     def _sheet_name(range_str):
         return range_str.split("!")[0]
 
-    def get(self, spreadsheetId, range):
+    def get(self, spreadsheetId, range, valueRenderOption=None):
+        # valueRenderOption e'tiborsiz qoldiriladi - bu soxta implementatsiya
+        # hech qachon katakchalarni formatlamaydi, shuning uchun xom/
+        # formatlangan farqi yo'q (haqiqiy Sheets API'da esa muhim -
+        # sheets.py shu farqni UNFORMATTED_VALUE bilan hal qiladi).
         def _do():
             sheet = self._sheet_name(range)
             return {"values": [list(row) for row in self.sheets.get(sheet, [])]}

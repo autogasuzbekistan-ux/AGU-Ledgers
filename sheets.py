@@ -100,8 +100,12 @@ class SheetsClient:
         return cls(spreadsheet_id, service.spreadsheets().values())
 
     def _get_all_rows(self, sheet_name):
+        # valueRenderOption=UNFORMATTED_VALUE - katakchalarga valyuta/son
+        # formatlash qo'llanilgan bo'lsa ham (masalan "$1,234.00"), xom
+        # sonni qaytaradi, formatlangan matnni emas.
         result = self._values.get(
-            spreadsheetId=self.spreadsheet_id, range=f"{sheet_name}!A2:Z"
+            spreadsheetId=self.spreadsheet_id, range=f"{sheet_name}!A2:Z",
+            valueRenderOption="UNFORMATTED_VALUE",
         ).execute()
         return result.get("values", [])
 
