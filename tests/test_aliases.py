@@ -31,6 +31,12 @@ def test_resolve_is_case_and_whitespace_insensitive_but_not_fuzzy():
     assert reg.resolve("Alisher aka dokoni") is None
 
 
+def test_resolve_none_input_returns_none_without_crashing():
+    reg = _sample_registry()
+    # matn bo'lmagan Telegram xabari (rasm/sticker) uchun message.text None bo'ladi
+    assert reg.resolve(None) is None
+
+
 def test_resolve_many_splits_matched_and_needs_review():
     reg = _sample_registry()
 

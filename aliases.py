@@ -44,8 +44,11 @@ class AliasRegistry:
         self._aliaslar[key] = kontragent_id
 
     def resolve(self, name):
-        """Nomni rasmiy kontragent ID'ga bog'laydi. Aniq mos kelmasa -
-        HECH QACHON taxmin qilmaydi, None qaytaradi."""
+        """Nomni rasmiy kontragent ID'ga bog'laydi. Aniq mos kelmasa,
+        yoki `name` berilmagan bo'lsa (None) - HECH QACHON taxmin
+        qilmaydi, None qaytaradi."""
+        if name is None:
+            return None
         return self._aliaslar.get(_normalize(name))
 
     def resolve_many(self, names):

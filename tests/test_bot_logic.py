@@ -34,6 +34,8 @@ def test_parse_manual_date_accepts_known_formats_and_rejects_garbage():
     assert parse_manual_date("15-08-2026") == date(2026, 8, 15)
     assert parse_manual_date("ertaga") is None
     assert parse_manual_date("2026/08/15") is None
+    # matn bo'lmagan xabar (rasm/sticker) uchun message.text None bo'ladi
+    assert parse_manual_date(None) is None
 
 
 def _registry():

@@ -113,7 +113,10 @@ class AccessMiddleware(BaseMiddleware):
 
 def _parse_number(text):
     """Foydalanuvchi kiritgan sonni o'qiydi (bo'sh joy/vergul ajratgichlar
-    bilan ham). Noto'g'ri bo'lsa None qaytaradi."""
+    bilan ham). Noto'g'ri bo'lsa yoki matn bo'lmasa (masalan foydalanuvchi
+    rasm/sticker yuborsa, message.text None bo'ladi) None qaytaradi."""
+    if text is None:
+        return None
     cleaned = text.strip().replace(" ", "").replace(",", ".")
     try:
         return float(cleaned)

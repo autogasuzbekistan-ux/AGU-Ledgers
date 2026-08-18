@@ -48,8 +48,11 @@ def is_unusually_large_amount(entry, threshold_usd):
 
 def parse_manual_date(text):
     """"Kechiktirilgan kun" tugmasi uchun sana matnini o'qiydi
-    (DD.MM.YYYY va yaqin formatlar). Mos kelmasa None qaytaradi - hech
+    (DD.MM.YYYY va yaqin formatlar). Mos kelmasa (yoki matn berilmasa -
+    masalan foydalanuvchi rasm/sticker yuborsa) None qaytaradi - hech
     qachon taxmin qilinmaydi."""
+    if text is None:
+        return None
     text = text.strip()
     for fmt in DATE_FORMATS:
         try:
