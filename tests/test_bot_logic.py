@@ -4,10 +4,12 @@ from aliases import AliasRegistry
 from bot_logic import (
     apply_entry,
     compute_pending_kontragents,
+    daily_payments_detail,
     daily_payments_summary,
     days_since_last_payment,
     has_prior_entry,
     is_unusually_large_amount,
+    monthly_summary,
     parse_manual_date,
     top_debtors,
 )
@@ -126,6 +128,74 @@ def test_daily_payments_summary_aggregates_across_kontragents_and_sorts_descendi
 
 def test_daily_payments_summary_empty():
     assert daily_payments_summary({}) == []
+
+
+def test_daily_payments_detail_lists_each_kontragent_separately():
+    entries_by_kontragent = {
+        "rashid": [
+            DailyEntry(sana=date(2026, 8, 1), kontragent_id="rashid", naqd_dollar=10, kurs=12800).compute(),
+            DailyEntry(sana=date(2026, 8, 2), kontragent_id="rashid").compute(),  # to'lovsiz kun - chiqmasligi kerak
+        ],
+        "alisher": [
+            DailyEntry(sana=date(2026, 8, 1), kontragent_id="alisher", naqd_som=64000, kurs=12800).compute(),
+        ],
+        "bobur": [
+            DailyEntry(sana=date(2026, 8, 1), kontragent_id="bobur").compute(),  # to'lovsiz kun - chiqmasligi kerak
+        ],
+    }
+
+    result = daily_payments_detail(entries_by_kontragent, _registry())
+
+    # rashidning 08-02 yozuvi to'lovsiz (barcha maydon 0) - chiqmaydi.
+    # bobur ham umuman chiqmaydi.
+    assert result == [
+        (date(2026, 8, 1), "Alisher aka", 64000, 0, 0, 0, 5.0),
+        (date(2026, 8, 1), "Rashid aka", 0, 0, 0, 10, 10.0),
+    ]
+
+
+def test_daily_payments_detail_sorts_by_date_desc_then_name_asc():
+    entries_by_kontragent = {
+        "rashid": [
+            DailyEntry(sana=date(2026, 8, 1), kontragent_id="rashid", naqd_dollar=1).compute(),
+            DailyEntry(sana=date(2026, 8, 2), kontragent_id="rashid", naqd_dollar=2).compute(),
+        ],
+        "alisher": [
+            DailyEntry(sana=date(2026, 8, 2), kontragent_id="alisher", naqd_dollar=3).compute(),
+        ],
+    }
+
+    result = daily_payments_detail(entries_by_kontragent, _registry())
+
+    assert [(r[0], r[1]) for r in result] == [
+        (date(2026, 8, 2), "Alisher aka"),
+        (date(2026, 8, 2), "Rashid aka"),
+        (date(2026, 8, 1), "Rashid aka"),
+    ]
+
+
+def test_monthly_summary_aggregates_by_month_descending_with_commission():
+    entries_by_kontragent = {
+        "rashid": [
+            DailyEntry(sana=date(2026, 7, 15), kontragent_id="rashid", naqd_dollar=100, kurs=12800).compute(),
+            DailyEntry(sana=date(2026, 8, 1), kontragent_id="rashid", naqd_som=128000, kurs=12800).compute(),
+            DailyEntry(sana=date(2026, 8, 15), kontragent_id="rashid", naqd_dollar=50, kurs=12800).compute(),
+        ],
+    }
+
+    result = monthly_summary(entries_by_kontragent, commission_rate=0.01)
+
+    assert len(result) == 2
+    aug_label, naqd_som, click, terminal, naqd_dollar, jami_usd, komissiya = result[0]
+    assert aug_label == "2026-08 (Avgust)"
+    assert naqd_som == 128000
+    assert naqd_dollar == 50
+    assert jami_usd == 60.0  # 128000/12800 + 50
+    assert komissiya == 0.6
+
+    jul_label = result[1][0]
+    assert jul_label == "2026-07 (Iyul)"
+    assert result[1][5] == 100.0
 
 
 def test_apply_entry_inserts_new_day_and_cascades_recalculation():

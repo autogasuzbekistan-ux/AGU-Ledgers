@@ -40,10 +40,12 @@ from audit import AuditLog
 from bot_logic import (
     apply_entry,
     compute_pending_kontragents,
+    daily_payments_detail,
     daily_payments_summary,
     days_since_last_payment,
     has_prior_entry,
     is_unusually_large_amount,
+    monthly_summary,
     parse_manual_date,
     top_debtors,
 )
@@ -494,10 +496,12 @@ def build_router():
     # Qarzdorlar ro'yxati (qo'lda chaqirish) - professional Excel hisobot
     # sifatida, chat xabaridagi kabi 10 tagacha qisqartirilmagan.
     # -------------------------------------------------------------
-    async def _do_qarzdorlar(message: Message, sheets, aliases_registry):
+    async def _do_qarzdorlar(message: Message, cfg, sheets, aliases_registry):
         entries_by_kontragent = sheets.read_all_entries()
         debtors = top_debtors(entries_by_kontragent, aliases_registry, top_n=None)
         daily_rows = daily_payments_summary(entries_by_kontragent)
+        detail_rows = daily_payments_detail(entries_by_kontragent, aliases_registry)
+        monthly_rows = monthly_summary(entries_by_kontragent, commission_rate=cfg.commission_rate)
         if not debtors and not daily_rows:
             await message.answer("Hali hech qanday ma'lumot yo'q.", reply_markup=_main_menu_keyboard())
             return
@@ -505,7 +509,7 @@ def build_router():
         sana = date.today()
         path = f"/tmp/qarzdorlar_{sana.isoformat()}.xlsx"
         try:
-            build_debtors_report(debtors, daily_rows, path, sana=sana)
+            build_debtors_report(debtors, daily_rows, detail_rows, monthly_rows, path, sana=sana)
             jami_qarz = sum(qarz for _, qarz, _, _ in debtors)
             await message.answer_document(
                 FSInputFile(path, filename=f"qarzdorlar_{sana.isoformat()}.xlsx"),
@@ -519,12 +523,12 @@ def build_router():
                 pass
 
     @router.message(Command("qarzdorlar"))
-    async def cmd_qarzdorlar(message: Message, sheets, aliases_registry):
-        await _do_qarzdorlar(message, sheets, aliases_registry)
+    async def cmd_qarzdorlar(message: Message, cfg, sheets, aliases_registry):
+        await _do_qarzdorlar(message, cfg, sheets, aliases_registry)
 
     @router.message(F.text == MENU_DEBTORS)
-    async def on_menu_debtors(message: Message, sheets, aliases_registry):
-        await _do_qarzdorlar(message, sheets, aliases_registry)
+    async def on_menu_debtors(message: Message, cfg, sheets, aliases_registry):
+        await _do_qarzdorlar(message, cfg, sheets, aliases_registry)
 
     # -------------------------------------------------------------
     # Kurs: joriy kursni ko'rsatish va yangisini kiritish
@@ -829,6 +833,8 @@ async def send_morning_digest(bot: Bot, cfg: Config, sheets: SheetsClient, alias
     entries_by_kontragent = sheets.read_all_entries()
     debtors = top_debtors(entries_by_kontragent, aliases_registry, top_n=None)
     daily_rows = daily_payments_summary(entries_by_kontragent)
+    detail_rows = daily_payments_detail(entries_by_kontragent, aliases_registry)
+    monthly_rows = monthly_summary(entries_by_kontragent, commission_rate=cfg.commission_rate)
     today = date.today()
 
     alerts = []
@@ -845,7 +851,7 @@ async def send_morning_digest(bot: Bot, cfg: Config, sheets: SheetsClient, alias
     if debtors or daily_rows:
         path = f"/tmp/qarzdorlar_{today.isoformat()}.xlsx"
         try:
-            build_debtors_report(debtors, daily_rows, path, sana=today)
+            build_debtors_report(debtors, daily_rows, detail_rows, monthly_rows, path, sana=today)
             jami_qarz = sum(qarz for _, qarz, _, _ in debtors)
             caption = f"Ertalabki qarzdorlar hisoboti: {len(debtors)} ta, jami ${jami_qarz:,.2f}"
             for admin_id in cfg.allowed_telegram_ids:
