@@ -14,6 +14,7 @@ import asyncio
 import calendar
 import logging
 import os
+import sys
 from datetime import date, timedelta
 
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
@@ -59,7 +60,11 @@ from notifications import (
 from parsers import parse_click_file, parse_hisobot_file
 from sheets import SheetsClient
 
-logging.basicConfig(level=logging.INFO)
+# stream=sys.stdout - standart holatda logging stderr'ga yozadi, Railway
+# (va ko'plab konteyner platformalari) esa stderr'ni log darajasidan
+# qat'iy nazar QIZIL qilib ko'rsatadi. Oddiy INFO yozuvlari xato emas -
+# stdout'ga yo'naltirib, bu chalkashlikni oldini olamiz.
+logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger("agu_bot")
 
 FIELD_QUESTIONS = [
