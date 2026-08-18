@@ -10,6 +10,7 @@ from notifications import (
     format_entry_confirmation,
     format_month_end_summary,
     format_morning_digest,
+    format_upload_diff,
 )
 
 
@@ -61,6 +62,51 @@ def test_format_month_end_summary():
     assert "Jami topshirilgan: $12 345.68" in text
     assert "Komissiya: $123.46" in text
     assert "Jami chegirmalar: 500 000 so'm" in text
+
+
+def test_format_upload_diff_click_shows_usd_equivalent_using_kurs():
+    diff = {
+        "ozgargan": {},
+        "yangi": {"rashid": 128000},
+        "yoqolgan": {},
+    }
+    names = {"rashid": "Rashid aka"}
+
+    lines = format_upload_diff(diff, names, kind="click", kurs=12800, title="O'zgarishlar:")
+
+    assert lines[0] == "O'zgarishlar:"
+    assert "Kurs: 12800" in lines
+    assert any("Rashid aka" in line and "128 000 so'm" in line and "$10.00" in line for line in lines)
+
+
+def test_format_upload_diff_click_without_kurs_omits_usd():
+    diff = {"ozgargan": {}, "yangi": {"rashid": 50000}, "yoqolgan": {}}
+
+    lines = format_upload_diff(diff, {"rashid": "Rashid aka"}, kind="click", kurs=None)
+
+    assert any("kurs" in line.lower() for line in lines)
+    assert not any("$" in line for line in lines if "Rashid aka" in line)
+
+
+def test_format_upload_diff_hisobot_shows_field_breakdown_and_total_usd():
+    diff = {
+        "ozgargan": {
+            "rashid": (
+                {"naqd_som": 0, "click": 0, "naqd_dollar": 0, "terminal": 0},
+                {"naqd_som": 128000, "click": 0, "naqd_dollar": 5, "terminal": 0},
+            )
+        },
+        "yangi": {},
+        "yoqolgan": {},
+    }
+
+    lines = format_upload_diff(diff, {"rashid": "Rashid aka"}, kind="hisobot", kurs=12800)
+
+    joined = "\n".join(lines)
+    assert "Rashid aka" in joined
+    assert "dollar=5.00" in joined
+    # jami = 128000/12800 + 5 = 15
+    assert "$15.00" in joined
 
 
 def test_alert_formatters():

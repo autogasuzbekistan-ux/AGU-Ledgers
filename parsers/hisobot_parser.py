@@ -9,13 +9,18 @@ from openpyxl import load_workbook
 ROW_LABELS = {
     'naqt': 'naqd_som',
     "qog'oz": 'naqd_dollar',
-    'plastik': 'plastik',
+    'plastik': 'terminal',
     'click': 'click',
 }
 
 
 def parse_hisobot_file(path):
-    """Qaytaradi: {kontragent_nomi: {naqd_som, naqd_dollar, plastik, click}}"""
+    """Qaytaradi: {kontragent_nomi: {naqd_som, naqd_dollar, terminal, click}}
+
+    Maydon nomi 'terminal' (fayldagi 'Plastik' qatoridan) - report_parser.py
+    va ledger.DailyEntry bilan bir xil nomlanish, ikkalasi ham
+    on_reupload_confirm'da bir xil kalit ('terminal') orqali DailyEntry'ga
+    yoziladi."""
     wb = load_workbook(path, data_only=True)
     ws = wb.active
 

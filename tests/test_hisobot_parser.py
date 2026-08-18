@@ -24,13 +24,13 @@ def test_parse_hisobot_file_maps_row_labels_per_kontragent(tmp_path):
         "Rashid aka": {
             "naqd_som": 100000,
             "naqd_dollar": 20,
-            "plastik": 30000,
+            "terminal": 30000,
             "click": 15000,
         },
         "Alisher aka": {
             "naqd_som": 50000,
             "naqd_dollar": 10,
-            "plastik": 0,
+            "terminal": 0,
             "click": 25000,
         },
     }
@@ -52,6 +52,6 @@ def test_parse_hisobot_file_row_labels_are_case_insensitive(tmp_path):
     assert result["Rashid aka"] == {
         "naqd_som": 100000,
         "naqd_dollar": 20,
-        "plastik": 0,
+        "terminal": 0,
         "click": 5000,
     }

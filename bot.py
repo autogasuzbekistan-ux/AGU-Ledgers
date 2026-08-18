@@ -44,7 +44,7 @@ from bot_logic import (
     top_debtors,
 )
 from config import Config, load_config
-from diff import diff_parsed_data, format_diff, has_changes
+from diff import diff_parsed_data, has_changes
 from ledger import DailyEntry, monthly_commission, total_received_usd_equivalent
 from notifications import (
     format_alert_debt_threshold,
@@ -53,6 +53,7 @@ from notifications import (
     format_entry_confirmation,
     format_month_end_summary,
     format_morning_digest,
+    format_upload_diff,
 )
 from parsers import parse_click_file, parse_hisobot_file, parse_report_file
 from sheets import SheetsClient
@@ -520,23 +521,39 @@ def build_router():
         resolved, tekshirish_kerak = aliases_registry.resolve_many(raw.keys())
         by_id = {aliases_registry.resolve(name): raw[name] for name in resolved}
 
-        cache_key = f"last_upload:{kind}"
-        data = await state.get_data()
-        previous = data.get(cache_key, {})
+        sana = date.today()
+        kurs_bugun = sheets.get_kurs(sana)
+        # Solishtirish - avvalgi Telegram sessiyasidagi keshdan emas, balki
+        # Sheets'da bugun uchun HAQIQATDA saqlangan qiymatdan (bot qayta
+        # ishga tushsa ham to'g'ri ishlaydi, sessiyaga bog'liq emas).
+        today_entries = {
+            kid: entry
+            for kid, entries in sheets.read_all_entries().items()
+            for entry in entries if entry.sana == sana
+        }
+        if kind == "click":
+            previous = {kid: (today_entries[kid].click if kid in today_entries else 0) for kid in by_id}
+        else:
+            previous = {
+                kid: (
+                    {
+                        "naqd_som": today_entries[kid].naqd_som, "click": today_entries[kid].click,
+                        "naqd_dollar": today_entries[kid].naqd_dollar, "terminal": today_entries[kid].terminal,
+                    }
+                    if kid in today_entries
+                    else {"naqd_som": 0, "click": 0, "naqd_dollar": 0, "terminal": 0}
+                )
+                for kid in by_id
+            }
 
         diff = diff_parsed_data(previous, by_id)
         if not has_changes(diff):
             await message.answer("Fayl qayta tahlil qilindi - o'zgarish topilmadi.")
         else:
             await state.set_state(ReuploadStates.waiting_confirmation)
-            await state.update_data(pending_upload={"kind": kind, "kontragent_ids": by_id, "cache_key": cache_key})
+            await state.update_data(pending_upload={"kind": kind, "kontragent_ids": by_id})
             names_by_id = {kid: aliases_registry.rasmiy_nom(kid) for kid in by_id}
-            readable_diff = {
-                "ozgargan": {names_by_id.get(k, k): v for k, v in diff["ozgargan"].items()},
-                "yangi": {names_by_id.get(k, k): v for k, v in diff["yangi"].items()},
-                "yoqolgan": {names_by_id.get(k, k): v for k, v in diff["yoqolgan"].items()},
-            }
-            lines = format_diff(readable_diff, title="O'zgarishlar aniqlandi:")
+            lines = format_upload_diff(diff, names_by_id, kind, kurs_bugun, title="O'zgarishlar aniqlandi:")
             await message.answer("\n".join(lines), reply_markup=_reupload_keyboard())
 
         if tekshirish_kerak:
@@ -571,7 +588,6 @@ def build_router():
                 if e.sana >= sana:
                     sheets.update_entry(e)
 
-        await state.update_data(**{pending["cache_key"]: pending["kontragent_ids"]})
         await state.set_state(None)
         audit.log_action(callback.from_user.id, "fayl_tasdiqlash", {"kind": pending["kind"]})
         await callback.answer()

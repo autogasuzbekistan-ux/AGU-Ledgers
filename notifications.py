@@ -28,6 +28,55 @@ def format_entry_confirmation(entry, kontragent_nomi):
     return "\n".join(lines)
 
 
+def format_upload_diff(diff, names_by_id, kind, kurs, title=None):
+    """Fayl qayta yuklanganda (6-bo'lim) tasdiqlash uchun diff'ni o'qiladigan
+    matnga aylantiradi. "click" turi uchun so'm summasi kursga bo'linib
+    dollar ekvivalenti ham ko'rsatiladi - shu orqali operator qancha pul
+    haqida gap ketayotganini $ da ham ko'radi, faqat xom so'mni emas.
+    "hisobot"/"report" uchun qiymatlar allaqachon {naqd_som, click,
+    naqd_dollar, terminal} ko'rinishidagi dict - har bir maydon alohida
+    ko'rsatiladi, jami esa dollar ekvivalentida hisoblanadi."""
+    lines = []
+    if title:
+        lines.append(title)
+
+    if kind == "click":
+        if kurs:
+            lines.append(f"Kurs: {kurs}")
+        else:
+            lines.append("Kurs hali kiritilmagan - dollar ekvivalenti ko'rsatilmaydi.")
+
+        def fmt_click(som):
+            usd = f" (${_fmt(som / kurs, 2)})" if kurs else ""
+            return f"{_fmt(som)} so'm{usd}"
+
+        for kid, (eski, yangi) in diff["ozgargan"].items():
+            lines.append(f"{names_by_id.get(kid, kid)}: {fmt_click(eski)} -> {fmt_click(yangi)}")
+        for kid, yangi in diff["yangi"].items():
+            lines.append(f"{names_by_id.get(kid, kid)}: (yo'q edi) -> {fmt_click(yangi)}")
+        for kid, eski in diff["yoqolgan"].items():
+            lines.append(f"{names_by_id.get(kid, kid)}: {fmt_click(eski)} -> (faylda endi yo'q)")
+        return lines
+
+    def fmt_breakdown(d):
+        usd = d.get("naqd_dollar", 0) + (
+            (d.get("naqd_som", 0) + d.get("click", 0) + d.get("terminal", 0)) / kurs if kurs else 0
+        )
+        return (
+            f"so'm={_fmt(d.get('naqd_som', 0))}, click={_fmt(d.get('click', 0))}, "
+            f"terminal={_fmt(d.get('terminal', 0))}, dollar={_fmt(d.get('naqd_dollar', 0), 2)} "
+            f"(jami ${_fmt(usd, 2)})"
+        )
+
+    for kid, (eski, yangi) in diff["ozgargan"].items():
+        lines.append(f"{names_by_id.get(kid, kid)}:\n  eski: {fmt_breakdown(eski)}\n  yangi: {fmt_breakdown(yangi)}")
+    for kid, yangi in diff["yangi"].items():
+        lines.append(f"{names_by_id.get(kid, kid)}: (yo'q edi) -> {fmt_breakdown(yangi)}")
+    for kid, eski in diff["yoqolgan"].items():
+        lines.append(f"{names_by_id.get(kid, kid)}: {fmt_breakdown(eski)} -> (faylda endi yo'q)")
+    return lines
+
+
 def format_morning_digest(top_debtors):
     """Har kuni ertalab: eng katta qarzdorlar (oy bo'yicha jami + oxirgi
     to'lov), to'liq ro'yxat dashboard'da.
