@@ -677,6 +677,11 @@ def build_router():
         by_id = {}
         for name in resolved:
             kontragent_id = aliases_registry.resolve(name)
+            if kind == "click" and aliases_registry.is_click_fayldan_ozod(kontragent_id):
+                # Bu kontragentning click summasi hisobot faylidan olinadi -
+                # Click faylidagi qiymati ikki marta hisoblanib ketmasligi
+                # uchun e'tiborsiz qoldiriladi.
+                continue
             value = raw[name]
             by_id[kontragent_id] = (
                 _merge_upload_values(by_id[kontragent_id], value)

@@ -76,3 +76,32 @@ def test_json_roundtrip(tmp_path):
     assert loaded.resolve("Alisher aka do'kon") == "alisher"
     assert loaded.rasmiy_nom("rashid") == "Rashid aka"
     assert sorted(loaded.kontragentlar()) == sorted(reg.kontragentlar())
+
+
+def test_click_fayldan_ozod_marking_and_default():
+    reg = _sample_registry()
+
+    assert reg.is_click_fayldan_ozod("rashid") is False
+
+    reg.mark_click_fayldan_ozod("rashid")
+
+    assert reg.is_click_fayldan_ozod("rashid") is True
+    assert reg.is_click_fayldan_ozod("alisher") is False
+
+
+def test_mark_click_fayldan_ozod_unknown_kontragent_raises():
+    reg = AliasRegistry()
+    with pytest.raises(ValueError):
+        reg.mark_click_fayldan_ozod("rashid")
+
+
+def test_click_fayldan_ozod_survives_json_roundtrip(tmp_path):
+    reg = _sample_registry()
+    reg.mark_click_fayldan_ozod("rashid")
+    path = tmp_path / "aliases.json"
+    reg.save_json(path)
+
+    loaded = AliasRegistry.load_json(path)
+
+    assert loaded.is_click_fayldan_ozod("rashid") is True
+    assert loaded.is_click_fayldan_ozod("alisher") is False

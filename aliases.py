@@ -25,12 +25,30 @@ class AliasRegistry:
     def __init__(self):
         self._kontragentlar = {}  # id -> rasmiy_nom
         self._aliaslar = {}  # normalized_alias -> id
+        # Click faylida ham, hisobot faylida ham click summasi ko'rsatilgan
+        # kontragentlar - hisobot fayl ularning "har kuni keladigan"
+        # ro'yxatida bo'lgani uchun (TEXNIK_TOPSHIRIQ.md 4.2-bo'lim).
+        # Click faylidan kelgan click qiymati ular uchun E'TIBORSIZ
+        # qoldiriladi (ikki marta hisoblanib ketmasligi uchun) - haqiqiy
+        # click summasi hisobot faylidan olinadi.
+        self._click_fayldan_ozod = set()
 
     def add_kontragent(self, kontragent_id, rasmiy_nom):
         if kontragent_id in self._kontragentlar:
             raise ValueError(f"Kontragent allaqachon mavjud: {kontragent_id}")
         self._kontragentlar[kontragent_id] = rasmiy_nom
         self.add_alias(rasmiy_nom, kontragent_id)
+
+    def mark_click_fayldan_ozod(self, kontragent_id):
+        """Bu kontragentning click summasi Click faylidan emas, hisobot
+        faylidan olinishi kerakligini belgilaydi (ikki marta
+        hisoblanmasligi uchun)."""
+        if kontragent_id not in self._kontragentlar:
+            raise ValueError(f"Noma'lum kontragent ID: {kontragent_id}")
+        self._click_fayldan_ozod.add(kontragent_id)
+
+    def is_click_fayldan_ozod(self, kontragent_id):
+        return kontragent_id in self._click_fayldan_ozod
 
     def add_alias(self, alias_text, kontragent_id):
         if kontragent_id not in self._kontragentlar:
@@ -78,6 +96,7 @@ class AliasRegistry:
         return {
             "kontragentlar": self._kontragentlar,
             "aliaslar": self._aliaslar,
+            "click_fayldan_ozod": sorted(self._click_fayldan_ozod),
         }
 
     @classmethod
@@ -85,6 +104,7 @@ class AliasRegistry:
         registry = cls()
         registry._kontragentlar = dict(data.get("kontragentlar", {}))
         registry._aliaslar = dict(data.get("aliaslar", {}))
+        registry._click_fayldan_ozod = set(data.get("click_fayldan_ozod", []))
         return registry
 
     def save_json(self, path):
