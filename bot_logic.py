@@ -67,7 +67,10 @@ def top_debtors(entries_by_kontragent, aliases_registry, top_n=10):
     kontragentning barcha tarixi). Qaytaradi: [(rasmiy_nom, qarz_dollar,
     oxirgi_tolov_sana_yoki_None), ...] - eng katta qarzdan boshlab
     saralangan, faqat haqiqiy qarzi (musbat) borlar (avans chiqarilmaydi).
-    """
+
+    top_n=None - cheklovsiz, BARCHA qarzdorlar qaytariladi (masalan
+    to'liq Excel hisobot uchun - chat xabaridagi qisqartirilgan
+    ro'yxatdan farqli)."""
     debtors = []
     for kontragent_id, entries in entries_by_kontragent.items():
         if not entries:
@@ -88,7 +91,7 @@ def top_debtors(entries_by_kontragent, aliases_registry, top_n=10):
         )
 
     debtors.sort(key=lambda t: t[1], reverse=True)
-    return debtors[:top_n]
+    return debtors if top_n is None else debtors[:top_n]
 
 
 def days_since_last_payment(entries, today):

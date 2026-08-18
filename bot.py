@@ -26,6 +26,7 @@ from aiogram.types import (
     BotCommand,
     CallbackQuery,
     Document,
+    FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
@@ -54,10 +55,10 @@ from notifications import (
     format_alert_past_day_corrected,
     format_entry_confirmation,
     format_month_end_summary,
-    format_morning_digest,
     format_upload_diff,
 )
 from parsers import parse_click_file, parse_hisobot_file
+from reports import build_debtors_report
 from sheets import SheetsClient
 
 # stream=sys.stdout - standart holatda logging stderr'ga yozadi, Railway
@@ -489,12 +490,31 @@ def build_router():
         await callback.message.answer(FIELD_QUESTIONS[0][1], reply_markup=_cancel_keyboard())
 
     # -------------------------------------------------------------
-    # Qarzdorlar ro'yxati (qo'lda chaqirish)
+    # Qarzdorlar ro'yxati (qo'lda chaqirish) - professional Excel hisobot
+    # sifatida, chat xabaridagi kabi 10 tagacha qisqartirilmagan.
     # -------------------------------------------------------------
     async def _do_qarzdorlar(message: Message, sheets, aliases_registry):
         entries_by_kontragent = sheets.read_all_entries()
-        debtors = top_debtors(entries_by_kontragent, aliases_registry)
-        await message.answer(format_morning_digest(debtors), reply_markup=_main_menu_keyboard())
+        debtors = top_debtors(entries_by_kontragent, aliases_registry, top_n=None)
+        if not debtors:
+            await message.answer("Qarzdorlar ro'yxati bo'sh.", reply_markup=_main_menu_keyboard())
+            return
+
+        sana = date.today()
+        path = f"/tmp/qarzdorlar_{sana.isoformat()}.xlsx"
+        try:
+            build_debtors_report(debtors, path, sana=sana)
+            jami_qarz = sum(qarz for _, qarz, _ in debtors)
+            await message.answer_document(
+                FSInputFile(path, filename=f"qarzdorlar_{sana.isoformat()}.xlsx"),
+                caption=f"Qarzdorlar: {len(debtors)} ta, jami ${jami_qarz:,.2f}",
+                reply_markup=_main_menu_keyboard(),
+            )
+        finally:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
     @router.message(Command("qarzdorlar"))
     async def cmd_qarzdorlar(message: Message, sheets, aliases_registry):
@@ -805,8 +825,7 @@ def _entry_from_dict(d):
 # ---------------------------------------------------------------------
 async def send_morning_digest(bot: Bot, cfg: Config, sheets: SheetsClient, aliases_registry: AliasRegistry):
     entries_by_kontragent = sheets.read_all_entries()
-    debtors = top_debtors(entries_by_kontragent, aliases_registry)
-    text = format_morning_digest(debtors)
+    debtors = top_debtors(entries_by_kontragent, aliases_registry, top_n=None)
     today = date.today()
 
     alerts = []
@@ -820,8 +839,24 @@ async def send_morning_digest(bot: Bot, cfg: Config, sheets: SheetsClient, alias
             if latest.qolgan_qarz_dollar > cfg.debt_alert_threshold_usd:
                 alerts.append(format_alert_debt_threshold(nomi, latest.qolgan_qarz_dollar, cfg.debt_alert_threshold_usd))
 
+    if debtors:
+        path = f"/tmp/qarzdorlar_{today.isoformat()}.xlsx"
+        try:
+            build_debtors_report(debtors, path, sana=today)
+            jami_qarz = sum(qarz for _, qarz, _ in debtors)
+            caption = f"Ertalabki qarzdorlar hisoboti: {len(debtors)} ta, jami ${jami_qarz:,.2f}"
+            for admin_id in cfg.allowed_telegram_ids:
+                await bot.send_document(admin_id, FSInputFile(path, filename=f"qarzdorlar_{today.isoformat()}.xlsx"), caption=caption)
+        finally:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+    else:
+        for admin_id in cfg.allowed_telegram_ids:
+            await bot.send_message(admin_id, "Bugun qarzdorlar ro'yxati bo'sh.")
+
     for admin_id in cfg.allowed_telegram_ids:
-        await bot.send_message(admin_id, text)
         for alert in alerts:
             await bot.send_message(admin_id, alert)
 

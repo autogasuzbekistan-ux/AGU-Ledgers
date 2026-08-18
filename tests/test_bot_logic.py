@@ -86,6 +86,17 @@ def test_top_debtors_respects_top_n_and_finds_last_actual_payment_date():
     assert result == [("Rashid aka", 450, date(2026, 8, 1))]
 
 
+def test_top_debtors_top_n_none_returns_everyone():
+    entries_by_kontragent = {
+        "rashid": [DailyEntry(sana=date(2026, 8, 1), kontragent_id="rashid", qarz_boshida_dollar=100).compute()],
+        "alisher": [DailyEntry(sana=date(2026, 8, 1), kontragent_id="alisher", qarz_boshida_dollar=50).compute()],
+    }
+
+    result = top_debtors(entries_by_kontragent, _registry(), top_n=None)
+
+    assert len(result) == 2
+
+
 def test_apply_entry_inserts_new_day_and_cascades_recalculation():
     history = [
         DailyEntry(sana=date(2026, 8, 1), kontragent_id="rashid", naqd_dollar=10, qarz_boshida_dollar=100).compute(),
