@@ -113,6 +113,34 @@ class AccessMiddleware(BaseMiddleware):
         return await handler(event, data)
 
 
+# ---------------------------------------------------------------------
+# Kurs - kunning BIRINCHI harakatidan oldin so'raladi (6-bo'lim: kuniga
+# bir marta so'raladi, keyin shu kunning barcha yozuvlariga qo'llanadi).
+# Buyruq/tugma/fayl - nima bo'lishidan qat'iy nazar, kurs hali
+# kiritilmagan bo'lsa, boshqa hech narsa qilinmasdan avval shu so'raladi.
+# ---------------------------------------------------------------------
+class KursGateMiddleware(BaseMiddleware):
+    def __init__(self, sheets: SheetsClient):
+        super().__init__()
+        self.sheets = sheets
+
+    async def __call__(self, handler, event, data):
+        state: FSMContext = data.get("state")
+        if state is not None:
+            current_state = await state.get_state()
+            if current_state == EntryStates.waiting_kurs.state:
+                return await handler(event, data)  # bu - kursga javob
+
+            sana = date.today()
+            if self.sheets.get_kurs(sana) is None:
+                await state.set_state(EntryStates.waiting_kurs)
+                await state.update_data(kurs_sana=sana.isoformat(), flow="auto")
+                await event.answer(f"Avval {sana.isoformat()} uchun bugungi kursni kiriting.")
+                return
+
+        return await handler(event, data)
+
+
 def _parse_number(text):
     """Foydalanuvchi kiritgan sonni o'qiydi (bo'sh joy/vergul ajratgichlar
     bilan ham). Noto'g'ri bo'lsa yoki matn bo'lmasa (masalan foydalanuvchi
@@ -782,6 +810,7 @@ async def main():
     dp.include_router(router)
     router.message.middleware(AccessMiddleware(cfg))
     router.callback_query.middleware(AccessMiddleware(cfg))
+    router.message.middleware(KursGateMiddleware(sheets))
 
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
